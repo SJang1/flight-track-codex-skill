@@ -140,4 +140,13 @@ test('website form submits typed inputs and displays raw results from the lookup
   await find('lookup').dispatch('submit');
   assert.equal(upstream.length, 3);
   assert.ok(find('results').descendants().some((node) => node.textContent === 'Aviationstack · 키 없음'));
+
+  find('operation').value = 'airport_info';
+  await find('operation').dispatch('change');
+  assert.equal(find('field-airport').required, true);
+  find('field-airport').value = 'ICN';
+  find('providers').value = 'freeairportdb';
+  await find('lookup').dispatch('submit');
+  assert.deepEqual(submitted[4], { operation: 'airport_info', airport: 'ICN', providers: ['freeairportdb'] });
+  assert.equal(upstream[3].pathname, '/v1/airports/ICN');
 });

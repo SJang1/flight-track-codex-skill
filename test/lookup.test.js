@@ -199,7 +199,11 @@ test("raw bodies and advisory pacing through MCP tools/call", async (t) => {
       const allFlights = url.pathname.includes("/statusOfAllFltDeOdp/");
       assert.equal(url.searchParams.get(allFlights ? "flightId" : "flight_id"), "KE703");
       assert.equal(url.searchParams.has(allFlights ? "airportCode" : "airport_code"), false);
-      assert.equal(url.searchParams.get("passengerOrCargo"), allFlights ? "P" : null);
+      const dedicatedPassenger = url.pathname.includes("/StatusOfPassengerFlightsDeOdp/");
+      assert.equal(url.searchParams.get("inqtimechcd"), dedicatedPassenger ? "E" : null);
+      for (const param of ["passengerOrCargo", "searchdtCode", "searchDate", "from_time", "to_time", "searchFrom", "searchTo", "lang"]) {
+        assert.equal(url.searchParams.has(param), false, param);
+      }
       return Response.json({ reflected: key, encoded: encodeURIComponent(key) });
     };
     const paired = await call("aviation_lookup", {
@@ -229,7 +233,10 @@ test("raw bodies and advisory pacing through MCP tools/call", async (t) => {
     assert.deepEqual(body.fromAirports, ["RKSI"]);
     assert.deepEqual(body.toAirports, ["RJAA"]);
     assert.deepEqual(body.flightIds, ["KE703"]);
-    assert.equal(body.pageSize, 1);
+    assert.equal(url.searchParams.get("pageSize"), "1");
+    assert.equal(body.page, undefined);
+    assert.equal(body.pageSize, undefined);
+    assert.equal(body.includeFlightUrls, undefined);
     return new Response(airnavRaw);
   };
   const airnavRoute = await call("aviation_lookup", { ...routeInput, providers: ["airnavradar"] }, { AIRNAVRADAR_API_TOKEN: "DEMO_KEY" });
@@ -453,10 +460,16 @@ test("KAC schedules can filter by an exact flight without airport or direction",
   const base = { operation: "schedule", identType: "flight_number", providers: ["kac_schedule"] };
   const env = { KAC_SCHEDULE_SERVICE_KEY: "dummy-kac-schedule-key" };
   await call("aviation_lookup", { ...base, ident: "KE123", market: "domestic" }, env);
-  await call("aviation_lookup", { ...base, ident: "NH862", market: "international" }, env);
+  const international = { ...base, ident: "NH862", market: "international" };
+  await call("aviation_lookup", { ...international, start: "2026-11-24T15:00:00Z", end: "2026-11-25T15:00:00Z" }, env);
+  const { structuredContent } = await call("aviation_lookup", { ...international, fromTime: "0600" }, env);
+  assert.equal(structuredContent.providers[0].status, "unsupported_input");
+  assert.equal(structuredContent.providers[0].upstream_attempted, false);
+  assert.match(structuredContent.providers[0].detail, /whole-day date filters/);
   assert.deepEqual(requests.map((url) => url.pathname.split("/").at(-1)), ["dom", "int"]);
   assert.deepEqual(requests.map((url) => url.searchParams.get("schFlightNum")), ["123", "NH862"]);
   assert.equal(requests[0].searchParams.get("schAirLine"), "KE");
+  assert.equal(requests[1].searchParams.get("schDate"), "20261125");
   assert.ok(requests.every((url) => !url.searchParams.has("schDeptCityCode") && !url.searchParams.has("schArrvCityCode")));
 });
 
@@ -511,7 +524,7 @@ test("KAC real-time status and flight-number search use their documented endpoin
   }
   assert.equal(expectedRequests.size, 0);
 
-  for (const filters of [{ airport: "GMP" }, { ident: "KE703", identType: "flight_number" }, { fromTime: "0600" }]) {
+  for (const filters of [{ airport: "GMP" }, { ident: "KE703", identType: "flight_number" }, { fromTime: "0600" }, { cursor: "other-provider-cursor" }]) {
     const { structuredContent } = await call("aviation_lookup", { ...detailInput, ...filters }, env);
     assert.equal(structuredContent.providers[0].status, "unsupported_input");
   }

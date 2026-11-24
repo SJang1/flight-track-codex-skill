@@ -71,10 +71,19 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
           <option value="flight">항공편 상태</option>
           <option value="live">실시간 위치</option>
           <option value="track">비행 궤적</option>
+          <option value="filed_route">제출 비행계획 경로</option>
           <option value="history">과거 운항</option>
+          <option value="last_flight">기체의 마지막 운항</option>
+          <option value="flight_dates">편명별 운항 날짜</option>
           <option value="airport">공항 출도착</option>
           <option value="route">운항 구간</option>
           <option value="schedule">운항 일정</option>
+          <option value="aircraft">기체 상세 정보</option>
+          <option value="aircraft_registrations">기체 등록 이력</option>
+          <option value="airport_info">공항 기본 정보</option>
+          <option value="airport_runways">공항 활주로</option>
+          <option value="airline_info">항공사 기본 정보</option>
+          <option value="nearby">반경 내 기체</option>
           <option value="fr24">FR24 전용 엔드포인트</option>
         </select>
         <div id="fields" class="field-grid"></div>
@@ -105,7 +114,7 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
               <input id="exclude-providers" name="excludeProviders" list="provider-options" placeholder="예: opensky" autocomplete="off" spellcheck="false" aria-describedby="provider-help">
             </div>
           </div>
-          <small id="provider-help">선택 칸을 비우면 FR24를 포함해 조회 조건과 키가 맞는 공급자를 조회합니다. ID는 쉼표로 구분하며, 양쪽에 있는 공급자는 제외됩니다.</small>
+          <small id="provider-help">기본 조회는 조건과 키가 맞는 공급자를 사용합니다. 공급자 ID는 쉼표로 구분합니다. 공급자 자체 식별자는 발급한 공급자 한 곳을 선택해야 합니다.</small>
           <datalist id="provider-options"></datalist>
         </fieldset>
         <div class="actions"><button id="submit" type="submit">요청 보내기</button><button id="cancel" type="button" disabled>중단</button></div>
@@ -150,14 +159,14 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
   let active;
   let received = 0;
   const skipReasons = {
-    missing_credentials: '키 없음', select_individually: '단독 선택 필요', unsupported_operation: '조회 유형 미지원',
+    missing_credentials: '키 없음', select_individually: '단독 선택 필요', select_provider: '명시적 선택 필요', unsupported_operation: '조회 유형 미지원',
     unsupported_input: '입력 조건 미지원', unsupported_format: '응답 형식 미지원', provider_processing_error: '요청 준비 실패',
   };
 
   const identifiers = [
     ['flight_number', '편명'], ['iata', 'IATA 편명'], ['icao', 'ICAO 편명'],
     ['callsign', '호출부호'], ['registration', '기체 등록번호'], ['icao24', 'ICAO 24비트 주소'],
-    ['provider_id', '공급자 식별자'],
+    ['aircraft_type', 'ICAO 기종 코드'], ['provider_id', '공급자 식별자'],
   ];
   const direction = { label: '출도착 구분', options: [['', '전체'], ['departure', '출발'], ['arrival', '도착']] };
   const dateRange = ['date', 'start', 'end'];
@@ -172,6 +181,8 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
     airport: { label: '공항 코드', placeholder: 'ICN', pattern: '[A-Za-z0-9]{3,4}' },
     oppositeAirport: { label: '상대 공항 코드', placeholder: 'NRT', pattern: '[A-Za-z0-9]{3,4}' },
     date: { label: '조회 날짜', type: 'date' },
+    fromDate: { label: '출발일 시작', type: 'date', required: true },
+    toDate: { label: '출발일 종료', type: 'date', required: true },
     start: { label: '시작 시각 (UTC)', type: 'datetime-local' },
     end: { label: '종료 시각 (UTC)', type: 'datetime-local' },
     direction,
@@ -183,15 +194,28 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
     page: { label: '페이지', type: 'number', minimum: 1, maximum: 100 },
     limit: { label: '최대 결과 수', type: 'number', minimum: 1, maximum: 100 },
     cursor: { label: '페이지 커서', maxLength: 2048 },
+    trackScope: { label: '궤적 범위', options: [['', '공급자 기본값'], ['recent', '최근'], ['full', '전체']] },
+    latitude: { label: '위도', type: 'number', minimum: -90, maximum: 90, step: 'any', required: true },
+    longitude: { label: '경도', type: 'number', minimum: -180, maximum: 180, step: 'any', required: true },
+    radiusNm: { label: '반경 (해리)', type: 'number', minimum: 0, maximum: 250, step: 'any', required: true },
   };
   const forms = {
     flight: { fields: ['identType', 'ident'], example: 'KE703', optional: ['airport', 'oppositeAirport', 'direction', 'callsign', 'icao24', 'registration', ...dateRange, ...airportTime, ...paging, 'format'] },
-    live: { fields: ['identType', 'ident'], identType: 'callsign', example: 'KAL93', optional: ['limit', 'format'] },
-    track: { fields: ['identType', 'ident'], identType: 'icao24', example: '71C597', optional: [...dateRange, ...paging, 'format'] },
-    history: { fields: ['identType', 'ident'], identType: 'icao24', example: '71C597', optional: ['airport', ...dateRange, ...airportTime, ...paging, 'format'] },
+    live: { fields: ['identType', 'ident'], identType: 'callsign', example: 'KAL93', optional: ['start', 'limit', 'format'] },
+    track: { fields: ['identType', 'ident'], identType: 'icao24', example: '71C597', optional: ['trackScope', ...dateRange, ...paging, 'format'] },
+    filed_route: { fields: ['identType', 'ident'], example: 'KE703', optional: [...dateRange, 'format'] },
+    history: { fields: ['identType', 'ident'], identType: 'icao24', example: '71C597', optional: ['airport', 'oppositeAirport', 'direction', ...dateRange, ...airportTime, ...paging, 'format'] },
+    last_flight: { fields: ['identType', 'ident'], identType: 'registration', identifyBy: ['registration'], example: 'HL8008', optional: ['format'] },
+    flight_dates: { fields: ['identType', 'ident', 'fromDate', 'toDate'], example: 'KE703', optional: ['format'] },
     airport: { fields: ['airport', 'direction'], optional: [...dateRange, ...airportTime, 'market', ...paging, 'format'] },
     route: { fields: ['airport', 'oppositeAirport'], optional: [...dateRange, ...airportTime, 'market', ...paging, 'format'] },
     schedule: { fields: ['airport', 'direction', 'date', 'market'], optional: ['ident', 'oppositeAirport', ...airportTime, ...paging, 'format'] },
+    aircraft: { fields: ['identType', 'ident'], identType: 'registration', identifyBy: ['registration', 'icao24', 'aircraft_type', 'provider_id'], example: 'HL8008', optional: ['format'] },
+    aircraft_registrations: { fields: ['identType', 'ident'], identType: 'registration', identifyBy: ['registration', 'icao24', 'provider_id'], example: 'HL8008', optional: ['format'] },
+    airport_info: { fields: ['airport'], optional: ['format'] },
+    airport_runways: { fields: ['airport'], optional: ['format'] },
+    airline_info: { fields: ['identType', 'ident'], identType: 'icao', identifyBy: ['iata', 'icao'], example: 'KAL', optional: ['format'] },
+    nearby: { fields: ['latitude', 'longitude', 'radiusNm'], optional: ['limit', 'format'] },
   };
   const endpointNames = {
     airports_light: '공항 정보 (Light)', airports_full: '공항 정보 (Full)', airlines_light: '항공사 정보',
@@ -253,6 +277,7 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
     } else {
       input.type = spec.type ?? 'text';
       if (input.type === 'datetime-local') input.step = '1';
+      if (spec.step) input.step = spec.step;
       input.spellcheck = false;
       input.autocomplete = 'off';
       if (spec.placeholder) input.placeholder = spec.placeholder;
@@ -270,7 +295,14 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
   function genericField(mode, name) {
     const spec = { ...fieldSpecs[name] };
     if (name === 'identType') spec.value = forms[mode].identType ?? 'flight_number';
+    if (name === 'identType' && forms[mode].identifyBy) {
+      spec.options = identifiers.filter(([value]) => forms[mode].identifyBy.includes(value)).map(([value, label]) =>
+        [value, mode === 'airline_info' ? value.toUpperCase() + ' 항공사 코드' : label]);
+    }
     if (name === 'ident') spec.placeholder = forms[mode].example;
+    if (name === 'start' && mode === 'live') spec.label = 'OpenSky 스냅샷 시각 (UTC)';
+    if (name === 'airport' && ['airport_info', 'airport_runways'].includes(mode)) spec.required = true;
+    if (name === 'ident' && mode === 'history') spec.required = false;
     if (name === 'ident' && mode === 'schedule') Object.assign(spec, { label: '편명', placeholder: 'KE123', required: false });
     if (mode === 'route' && (name === 'airport' || name === 'oppositeAirport')) {
       spec.label = name === 'airport' ? '출발 공항 코드' : '도착 공항 코드';
@@ -358,6 +390,7 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
       };
     }
     const input = { operation: mode === 'route' ? 'airport' : mode, ...fieldValues(fields), ...fieldValues(additionalFields) };
+    if (mode === 'history' && !input.ident) delete input.identType;
     if (mode === 'route') input.direction = 'departure';
     for (const field of providerFields) {
       const values = field.value.split(',').map((id) => id.trim()).filter(Boolean);

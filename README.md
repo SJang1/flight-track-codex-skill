@@ -30,9 +30,11 @@ OpenSky의 `credentials.json`에서 `clientId` 값은 `OPENSKY_CLIENT_ID`, `clie
 | [인천국제공항공사_화물기 운항 현황 상세 조회 서비스 (15113461)](https://www.data.go.kr/data/15113461/openapi.do) | `INCHEON_CARGO_SERVICE_KEY` |
 | [인천국제공항공사_항공기 운항 현황 상세 조회 (15140153)](https://www.data.go.kr/data/15140153/openapi.do) | `INCHEON_ALL_FLIGHTS_SERVICE_KEY` |
 | [인천국제공항공사_여객기 운항 현황 상세 조회 서비스 (15112968)](https://www.data.go.kr/data/15112968/openapi.do) | `INCHEON_PASSENGER_SERVICE_KEY` |
+| [인천국제공항공사_여객기 운항 스케줄 (15095059)](https://www.data.go.kr/data/15095059/openapi.do) | `INCHEON_PASSENGER_TIMETABLE_SERVICE_KEY` |
 | [한국공항공사_실시간 항공기 운항정보 조회_GW (15158625)](https://www.data.go.kr/data/15158625/openapi.do) | `KAC_FLIGHT_STATUS_SERVICE_KEY` |
 | [인천국제공항공사_화물편 운항현황(다국어) (15095068)](https://www.data.go.kr/data/15095068/openapi.do) | `INCHEON_CARGO_TODAY_SERVICE_KEY` |
 | [한국공항공사_실시간 항공기 운항정보 검색_GW (15160195)](https://www.data.go.kr/data/15160195/openapi.do) | `KAC_FLIGHT_SEARCH_SERVICE_KEY` |
+| [한국공항공사_항공기 기종·등록번호 운항 정보 (15158519)](https://www.data.go.kr/data/15158519/openapi.do) | `KAC_AIRCRAFT_STATUS_SERVICE_KEY` |
 | [한국공항공사_항공기 운항 스케줄 정보_GW (15158949)](https://www.data.go.kr/data/15158949/openapi.do) | `KAC_SCHEDULE_SERVICE_KEY` |
 
 ### 키 없이 호출할 수 있는 API
@@ -66,6 +68,33 @@ Dots에서는 질문당 `aviation_lookup`을 한 번 호출합니다. `providers
 비공개 Site에 로그인하면 웹 화면에서 조회 유형을 고르고 입력폼을 채워 직접 실행할 수 있습니다. **이 공급자만 조회**와 **이 공급자 제외** 칸에는 공급자 ID를 쉼표로 구분해 입력합니다. JSON을 작성하지 않아도 됩니다.
 
 편명, 구간, 공항 코드는 각각 독립적으로 조회할 수 있습니다. Dots에는 아래 예시처럼 자연어로 요청하면 됩니다. JSON은 `aviation_lookup`에 전달되는 인자 예시입니다.
+
+| 목적 | 먼저 넣을 조건 |
+| --- | --- |
+| 편명으로 현재 상태 | `operation: "flight"`, 편명과 종류. 날짜·공항·방향은 어느 운항편인지 구분할 때 추가합니다. |
+| 현재 기체 위치 | `operation: "live"`, 확인된 콜사인·등록번호·ICAO24 중 하나. |
+| 공항 출도착 | `operation: "airport"`, 공항 코드. 출발이나 도착만 필요하면 `direction`을 추가합니다. |
+| 운항 구간 | `operation: "airport"`, 양쪽 공항과 방향. 편명은 그 편으로만 좁힐 때 추가합니다. |
+| 과거 기록·궤적 | `history`에는 식별자나 공항과 관심 날짜를, `track`에는 공급자가 지원하는 궤적 ID나 기체 식별자를 보냅니다. |
+
+공급자마다 적용한 시간·구간·식별자 기준은 응답의 `time_filter_basis`, `time_filter_note`, `route_filter_note`, `identity_filter_note`에 표시됩니다. 예를 들어 adsb.aero의 콜사인·등록번호 검색은 접두어 검색이어서 원문에서 정확히 같은 식별자인지 확인합니다. [adsb.aero API 문서](https://adsb.aero/llms.txt)
+
+OpenSky의 최근 한 시점 위치가 필요하면 `live`에 ICAO24와 `start`를 넣습니다. 인증된 조회에서 최근 1시간 이내의 시점을 사용할 수 있고, OpenSky는 시각을 5초 단위로 맞춥니다. [OpenSky 위치 조회](https://openskynetwork.github.io/opensky-api/rest.html#all-state-vectors)
+
+### 기체·공항 정보와 비행 경로
+
+| 알고 싶은 정보 | 조회 유형과 입력 |
+| --- | --- |
+| 기체 기본 정보 | `aircraft`에 등록번호 또는 ICAO24를 넣습니다. FlightAware 기종 정보는 `identType: "aircraft_type"`과 `B77W` 같은 ICAO 기종 코드로 조회합니다. |
+| 기체 등록 이력 또는 마지막 운항 | `aircraft_registrations`에는 AeroDataBox가 지원하는 기체 식별자를, `last_flight`에는 FlightAware와 기체 등록번호를 지정합니다. |
+| 공항 기본 정보 또는 활주로 | `airport_info` 또는 `airport_runways`에 공항 코드를 넣습니다. |
+| 항공사 정보 | `airline_info`에 IATA 두 글자 또는 ICAO 세 글자 코드와 해당 `identType`을 넣습니다. |
+| 실제 관측 궤적 | `track`을 사용합니다. AirNav는 식별자와 날짜·시간 범위를 사용하며, adsb.lol에는 `trackScope: "recent"`를 쓸 수 있습니다. |
+| 제출 비행계획 경로 | `filed_route`를 사용합니다. FlightAware는 공급자 항공편 ID, AeroDataBox는 지원하는 편명·기체 식별자를 사용합니다. |
+| 편명별 출발일 목록 | `flight_dates`에 편명과 현지 출발일 범위 `fromDate`, `toDate`를 넣습니다. |
+| 주변 실시간 항공기 | `nearby`에 위도 `latitude`, 경도 `longitude`, 해리 단위 `radiusNm`을 넣습니다. 가장 가까운 기체 한 대는 `limit: 1`을 지원하는 공급자에서 조회합니다. |
+
+`identType: "provider_id"`는 그 ID를 발급한 공급자 한 곳을 `providers`로 선택합니다. 예를 들어 FR24 `fr24_id`와 FlightAware `fa_flight_id`는 각각 자기 공급자에서 사용합니다. 별도로 추가한 유료 공항 참조 경로는 `airport_info` 요청에서 실행됩니다. 공급자별 조회 가능 범위는 `aviation_providers`에 표시됩니다. [FlightAware AeroAPI](https://www.flightaware.com/commercial/aeroapi/resources/aeroapi-openapi.yml) · [AeroDataBox Direct](https://doc.aerodatabox.com/docs/openapi-direct-v1.json) · [AirNav OpenAPI](https://www.airnavradar.com/api/openapi) · [adsb.lol OpenAPI](https://api.adsb.lol/api/openapi.json)
 
 ### 편명 조회
 
@@ -136,11 +165,25 @@ FR24나 AeroDataBox의 편명 조회에서 공항의 분 단위 조건을 생략
 
 한국공항공사 운항 일정은 `operation: "schedule"`에서 IATA 편명과 `market`(`domestic` 또는 `international`)으로 조회할 수 있습니다. 공항 기준으로 찾을 때는 해당 공항과 출도착 방향을 지정합니다. [한국공항공사 스케줄 명세](https://www.data.go.kr/data/15158949/openapi.do)
 
+| 별도 공급자 선택 | 연결한 기능 |
+| --- | --- |
+| `incheon_all_cargo` | 인천 전체 운항 API의 화물 모드. `INCHEON_ALL_FLIGHTS_SERVICE_KEY`를 공유합니다. [명세](https://www.data.go.kr/data/15140153/openapi.do) |
+| `kac_dated_status`, `kac_taxfree_status` | 날짜별 출도착 상세와 면세점용 여객 운항정보. `KAC_FLIGHT_STATUS_SERVICE_KEY`를 공유합니다. [명세](https://www.data.go.kr/data/15158625/openapi.do) |
+| `kac_taxfree_schedule` | 국내·국제 면세점용 스케줄. `KAC_SCHEDULE_SERVICE_KEY`를 공유합니다. [명세](https://www.data.go.kr/data/15158949/openapi.do) |
+| `kac_aircraft_status` | 편명 또는 등록번호의 기종·등록번호 배정 정보. 별도 데이터셋의 `KAC_AIRCRAFT_STATUS_SERVICE_KEY`가 필요합니다. [명세](https://www.data.go.kr/data/15158519/openapi.do) |
+| `incheon_passenger_timetable` | ICN 출도착 방향과 상대 공항으로 찾는 계절 정기운항표. 원문의 요일과 유효일로 일정을 확인합니다. 별도 데이터셋의 `INCHEON_PASSENGER_TIMETABLE_SERVICE_KEY`가 필요합니다. [명세](https://www.data.go.kr/data/15095059/openapi.do) |
+
+AirLabs의 과거 운항은 `api/v10/historical` 베타에서 편명과 선택적인 숫자 오프셋을 받습니다. Aviationstack Basic 이상은 날짜를 지정한 과거 운항과 IATA 공항·출도착 방향·날짜로 조회하는 미래 운항을 제공합니다. Aviationstack의 참조 카탈로그는 자동완성 결과를 제공하므로 정확한 코드가 필요한 공통 참조 조회는 해당 코드를 받는 공급자를 사용합니다. [AirLabs 과거 운항](https://airlabs.co/docs/historical) · [Aviationstack 직접 API](https://docs.apilayer.com/apilayer/docs/quickstart-guide-6) · [Aviationstack 미래 운항](https://blog.apilayer.com/flights-timetable-or-flightsfuture-which-aviationstack-endpoint-do-you-actually-need/)
+
 FlightAware AeroAPI는 `providers: ["flightaware"]`로 조회합니다. 호출은 결과 집합에 따라 과금될 수 있습니다. OpenSky REST API를 운영 서비스에서 사용하려면 OpenSky의 사전 서면 라이선스가 필요합니다. [OpenSky 이용약관](https://opensky-network.org/about/terms-of-use)
+
+FlightAware에서 두 공항을 지정하면 직항 구간 경로를 사용합니다. 구간 API의 시간 범위가 어느 운항 시각에 적용되는지는 명세에 없으며, 이후 페이지는 공급자가 돌려준 커서로 요청합니다. AirLabs는 편명으로 단일 편을 조회하고, 출발·도착 방향까지 지정한 공항이나 구간 조건은 해당 필터를 지원하는 실시간 스케줄에서 조회합니다. [FlightAware AeroAPI 명세](https://www.flightaware.com/commercial/aeroapi/resources/aeroapi-openapi.yml) · [AirLabs 스케줄 명세](https://airlabs.co/docs/schedules)
 
 ### Flightradar24 조회
 
 항공편 상태(`flight`), 실시간 위치(`live`), 공항·구간(`airport`), 과거 운항(`history`), 궤적(`track`)은 입력 조건과 키가 맞으면 기본 조회에 FR24 결과도 포함합니다. 날짜 없는 `flight` 조회는 현재 추적 중인 위치를 요청하며, 날짜 범위를 지정하면 운항 요약을 요청합니다.
+
+기체 위치만 필요한 `live`와 과거 한 시점 위치 조회는 FR24 Positions Light를 사용합니다. 콜사인 또는 등록번호 한 개를 조회할 때 `limit`을 생략하면 한 건을 요청합니다. 출발·도착지나 기체 상세가 필요한 경우 FR24 전용 Positions Full 엔드포인트를 선택할 수 있습니다. [FR24 위치 엔드포인트](https://fr24api.flightradar24.com/docs/endpoints/overview)
 
 병렬 조회는 FR24 원문을 출처가 표시된 별도 응답으로 돌려줍니다. 다른 공급자의 실시간·준실시간 기록에 빈 항목이 있으면 그대로 표시합니다. [FR24 이용약관 §6.3](https://www.flightradar24.com/terms-of-service)
 
@@ -220,20 +263,20 @@ AirLabs와 공공데이터포털에서 받은 한도 오류 코드는 원본 본
 | `avioadsb` | `GET /v1/{hex,callsign,reg}/{id}` | 선택 `X-API-Key` 헤더 |
 | `adsb_aero` | `POST /api/v1/query`, `GET /api/v1/flights/{flight_id}` | 공개 |
 | `opensky` | `GET /api/states/all`, `/api/tracks/all`, `/api/flights/{aircraft,arrival,departure}` | OAuth |
-| `flightaware` | 항공편·위치·궤적·이력과 공항 운항편 `GET` | `x-apikey` 헤더 |
+| `flightaware` | 항공편·위치·궤적·이력과 공항 운항편·직항 구간 `GET` | `x-apikey` 헤더 |
 | `flightradar24` | 공항·항공사·실시간 및 과거 위치·이벤트·운항 요약·궤적·사용량 `GET` 17종 | Bearer API 키와 `Accept-Version: v1` |
 | `aerodatabox` | `/flights/{number,callsign,reg,icao24}/…`, `/flights/airports/…` `GET` | `X-API-Key` 헤더 |
-| `airnavradar` | `POST /v2/flights/live`, `POST /v2/flights/search` | Bearer 토큰 |
+| `airnavradar` | `POST /v2/flights/live`, `POST /v2/flights/search`, `GET /v2/flights/schedules`, `/v2/aircraft`, `/v2/airports/{code}` | Bearer 토큰 |
 | `kac_schedule` | `GET /B551178/flight-schedule/{dom,int}` | `serviceKey` 쿼리 |
 | `kac_flight_status` | `GET /B551178/flight-search/info` | `serviceKey` 쿼리 |
 | `kac_realtime_status` | `GET /B551178/flight-status/info` | `serviceKey` 쿼리 |
 | `kac_realtime_status_detail` | `GET /B551178/flight-status/detail` | `serviceKey` 쿼리 |
 | `incheon_cargo_today` | `GET /B551177/StatusOfCargoFlights/getCargo{Arrivals,Departures}` | `serviceKey` 쿼리 |
 | `incheon_cargo` | `GET /B551177/StatusOfCargoFlightsDeOdp/getCargo{Arrivals,Departures}DeOdp` | `serviceKey` 쿼리 |
-| `incheon_passenger` | `GET /B551177/statusOfAllFltDeOdp/getFlt{Arrivals,Departures}DeOdp`, `passengerOrCargo=P` | `serviceKey` 쿼리 |
+| `incheon_passenger` | `GET /B551177/statusOfAllFltDeOdp/getFlt{Arrivals,Departures}DeOdp`, 공급자 기본 여객 필터 사용 | `serviceKey` 쿼리 |
 | `incheon_passenger_detail` | `GET /B551177/StatusOfPassengerFlightsDeOdp/getPassenger{Arrivals,Departures}DeOdp` | `serviceKey` 쿼리 |
-| `airlabs` | `GET /api/v9/flight`, `GET /api/v9/schedules` | `api_key` 쿼리 |
-| `aviationstack` | 실시간 `GET /aviationstack/v1/flights` | `access_key` 쿼리 |
+| `airlabs` | `GET /api/v9/{flight,flights,schedules,fleets,airports,airlines}`, `GET /api/v10/historical` | `api_key` 쿼리 |
+| `aviationstack` | 실시간·날짜별 과거 `GET /aviationstack/v1/flights`, 미래 `GET /aviationstack/v1/flightsFuture` | `access_key` 쿼리 |
 
 공공데이터포털 어댑터는 기본으로 JSON을 요청하며, `format: "xml"`로 XML을 선택할 수 있습니다. 인수인계의 ADS-B Exchange, Airplanes.live, 피더 IP 전용 API는 구현 범위 밖입니다. [추적 API 코드](src/tracking-providers.js) · [공항·스케줄 API 코드](src/schedule-providers.js) · [AirNav Radar 코드](src/airnav-provider.js) · [Flightradar24 코드](src/flightradar24-provider.js)
 
@@ -245,8 +288,8 @@ AirLabs와 공공데이터포털에서 받은 한도 오류 코드는 원본 본
 - **adsb.lol**은 키 등급에 맞춰 `ADSB_LOL_TIER`를 `adhoc` 또는 `feeder`로 설정할 수 있습니다.
 - **OpenSky**의 확인된 계정 등급에 맞춰 `OPENSKY_CREDIT_TIER`를 `feeder` 또는 `licensed`로 설정할 수 있습니다. **AeroDataBox Direct**의 확인된 월간 단위 한도는 `AERODATABOX_MONTHLY_UNITS`에 넣습니다.
 - **FlightAware** 고급 이력 경로를 사용할 자격이 있으면 `FLIGHTAWARE_HISTORY=true`로 설정합니다.
-- **Flightradar24**는 `limit`을 지원하는 일반 조회에서 기본 최대 10건을 요청합니다. 보너스·충전분을 포함해 앞으로 31일 동안 쓸 크레딧을 정했다면 일반 변수 `FLIGHTRADAR24_MONTHLY_CREDITS`에 양의 정수로 넣을 수 있습니다. 이 값은 차감량의 상한을 구할 수 있는 조회의 권장 간격에만 반영됩니다. 값이 비어 있으면 분당 요청 한도로 권장 간격을 계산합니다. `usage`는 이미 사용한 크레딧을 집계하며 공급자 기준 분당 1회입니다. [Flightradar24 크레딧 문서](https://fr24api.flightradar24.com/docs/credit-overview)
-- **AirNav Radar**는 플러그인에서 100크레딧을 31일에 나눠 쓰는 기준으로 1크레딧당 7시간 26분 24초를 권장합니다. 검색은 페이지당 1건을 요청하며, 응답의 `cost`가 1보다 크면 권장 간격을 늘립니다. 실제 계정의 청구 주기는 공급자의 `/v2/billing/status`에서 확인할 수 있습니다.
+- **Flightradar24**는 콜사인 또는 등록번호 하나로 위치를 찾는 경우 기본 1건, 그 밖의 일반 조회에서 `limit`을 지원하면 기본 최대 10건을 요청합니다. 보너스·충전분을 포함해 앞으로 31일 동안 쓸 크레딧을 정했다면 일반 변수 `FLIGHTRADAR24_MONTHLY_CREDITS`에 양의 정수로 넣을 수 있습니다. 이 값은 차감량의 상한을 구할 수 있는 조회의 권장 간격에만 반영됩니다. 값이 비어 있으면 분당 요청 한도로 권장 간격을 계산합니다. `usage`는 이미 사용한 크레딧을 집계하며 공급자 기준 분당 1회입니다. [Flightradar24 크레딧 문서](https://fr24api.flightradar24.com/docs/credit-overview)
+- **AirNav Radar**는 플러그인에서 100크레딧을 31일에 나눠 쓰는 기준으로 1크레딧당 7시간 26분 24초를 권장합니다. 검색 쿼리에는 페이지당 1건을 요청하고 경로 좌표를 제외합니다. 응답의 `cost`가 1보다 크면 권장 간격을 늘립니다. 실제 계정의 청구 주기는 공급자의 `/v2/billing/status`에서 확인할 수 있습니다. [AirNav OpenAPI](https://www.airnavradar.com/api/openapi)
 - `AVIATION_RATE_LIMITS`에는 공급자 ID 또는 더 구체적인 `quota_bucket`을 키로 하여 한도를 입력합니다. 예를 들어 인천공항 상세 화물 API 운영계정의 승인 한도가 10만 회/일이면 `{"incheon_cargo":[{"requests":100000,"windowMs":86400000}]}`으로 설정합니다. `windowMs`는 밀리초입니다. `requests`는 보통 호출 수입니다. OpenSky와 AeroDataBox처럼 비용을 별도로 계산하는 어댑터는 해당 단위 수를 넣습니다. Flightradar24의 이 설정은 이미 크레딧을 환산한 호출 수로 입력합니다.
 
 </details>

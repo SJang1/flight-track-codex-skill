@@ -97,10 +97,20 @@ function summaryRange(input) {
   };
 }
 
+function positionLimit(input, light) {
+  const singleAircraft = light && ['callsign', 'registration'].includes(input.identType);
+  return input.limit ?? (singleAircraft ? 1 : DEFAULT_LIMIT);
+}
+
+function historicalSnapshot(input) {
+  return input.operation === 'history' && input.start && !input.end && !input.date && input.identType !== 'provider_id';
+}
+
 function live(input, env) {
   checkOptions(input);
   if (hasTimeFilter(input)) throw new Error('Use flight or airport for a time window, or history for a single historical Flightradar24 position timestamp.');
-  return get('live_positions_full', { ...filters(input), limit: input.limit ?? DEFAULT_LIMIT }, env);
+  const light = input.operation === 'live';
+  return get(light ? 'live_positions_light' : 'live_positions_full', { ...filters(input), limit: positionLimit(input, light) }, env);
 }
 
 function history(input, env) {
@@ -108,12 +118,12 @@ function history(input, env) {
   if (input.identType === 'provider_id' && input.operation !== 'airport') {
     return get('flight_summary_light', { flight_ids: flightId(input) }, env);
   }
-  if (input.operation === 'history' && input.start && !input.end && !input.date) {
+  if (historicalSnapshot(input)) {
     const timestamp = Date.parse(input.start);
     if (!Number.isFinite(timestamp) || timestamp < HISTORIC_POSITIONS_AVAILABLE_FROM || timestamp >= Date.now()) {
       throw new Error('Supply a historical timestamp on or after 2016-05-11 UTC for a Flightradar24 position snapshot.');
     }
-    return get('historic_positions_full', { ...filters(input), timestamp: Math.floor(timestamp / 1_000), limit: input.limit ?? DEFAULT_LIMIT }, env);
+    return get('historic_positions_light', { ...filters(input), timestamp: Math.floor(timestamp / 1_000), limit: positionLimit(input, true) }, env);
   }
   return get('flight_summary_light', { ...filters(input), ...summaryRange(input), limit: input.limit ?? DEFAULT_LIMIT }, env);
 }
@@ -141,7 +151,7 @@ export const flightradar24Provider = {
   id: 'flightradar24',
   label: 'Flightradar24 API',
   docs: 'https://fr24api.flightradar24.com/docs/endpoints/overview',
-  note: 'Participates in eligible lookups when a key is configured. An exact flight lookup uses its flight number and, when supplied, the date. Airport movement clock bounds do not narrow that exact-flight search. Timed airport lookups use UTC Flight Summary, filtered by first observed time. Select operation fr24 for a specific endpoint. FLIGHTRADAR24_PLAN controls coverage and request rate. FLIGHTRADAR24_MONTHLY_CREDITS optionally adds an advisory budget.',
+  note: 'Participates in eligible lookups when a key is configured. Aircraft position lookups use Positions Light. An exact flight lookup uses its flight number and, when supplied, the date. Airport movement clock bounds do not narrow that exact-flight search. Timed airport lookups use UTC Flight Summary, filtered by first observed time. Select operation fr24 for a specific endpoint. FLIGHTRADAR24_PLAN controls coverage and request rate. FLIGHTRADAR24_MONTHLY_CREDITS optionally adds an advisory budget.',
   keys: ['FLIGHTRADAR24_API_KEY'],
   airportInfoRequiresSelection: true,
   airportInfo(input, env) {
@@ -152,10 +162,12 @@ export const flightradar24Provider = {
   limits(input, env = {}) {
     if (input.operation === 'airport_info') return fr24RequestLimits('airports_light', {}, env);
     if (input.operation === 'fr24') return fr24RequestLimits(input.fr24Endpoint, input.fr24Params ?? {}, env);
+    if (input.operation === 'live' || historicalSnapshot(input)) {
+      const endpoint = input.operation === 'live' ? 'live_positions_light' : 'historic_positions_light';
+      return fr24RequestLimits(endpoint, { limit: positionLimit(input, true) }, env);
+    }
     const lookup = flightFilters(input);
-    const usesPositions = input.operation === 'live'
-      || (input.operation === 'history' && input.start && !input.end && !input.date && input.identType !== 'provider_id')
-      || (['airport', 'flight'].includes(input.operation) && !hasTimeFilter(lookup) && input.identType !== 'provider_id');
+    const usesPositions = ['airport', 'flight'].includes(input.operation) && !hasTimeFilter(lookup) && input.identType !== 'provider_id';
     const endpoint = input.operation === 'track' ? 'flight_tracks' : usesPositions ? 'live_positions_full' : 'flight_summary_light';
     const params = input.identType === 'provider_id' ? { flight_ids: input.ident } : { limit: input.limit };
     return fr24RequestLimits(endpoint, params, env);

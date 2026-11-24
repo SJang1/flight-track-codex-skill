@@ -1,4 +1,4 @@
-import { hasTimeFilter, KOREA_TIME_ZONE, localTimeWindow } from './lookup-time.js';
+import { airportTimeZone, hasTimeFilter, KOREA_TIME_ZONE, localTimeWindow, wallAt } from './lookup-time.js';
 
 const DAY_MS = 86_400_000;
 const MONTH_MS = 31 * DAY_MS;
@@ -69,12 +69,15 @@ function airportFields(input) {
   return filters;
 }
 
-function checkLiveWindow(input, provider, canFilterAirport = true) {
+function checkCommercialLiveFilters(input, provider) {
   if (hasTimeFilter(input)) {
     throw new Error(`${provider} does not support a requested time window on this live endpoint.`);
   }
-  if (!canFilterAirport && (input.airport || input.oppositeAirport)) {
-    throw new Error(`${provider} cannot apply airport filters to its single-flight lookup.`);
+  if (input.market || input.cursor) {
+    throw new Error(`${provider} does not accept market or cursor filters. Use supported airport filters or numeric pages.`);
+  }
+  if (input.direction && !input.airport) {
+    throw new Error(`Supply the airport for an arrival or departure filter on ${provider}.`);
   }
 }
 
@@ -84,10 +87,12 @@ function pageLimit(input, maximum = 100) {
 
 function offsetPage(input, maximum) {
   const limit = pageLimit(input, maximum);
-  return { limit, offset: ((input.page ?? 1) - 1) * limit };
+  const offset = ((input.page ?? 1) - 1) * limit;
+  return { limit, offset: offset || undefined };
 }
 
 function commonPortalParameters(input, serviceKey) {
+  if (input.cursor) throw new Error('This public data endpoint accepts page and limit instead of a cursor.');
   return {
     serviceKey,
     pageNo: input.page ?? 1,
@@ -119,45 +124,62 @@ function koreaTimeFilters(input) {
   return { ...input, date, fromTime: from.slice(11, 16).replace(':', ''), toTime };
 }
 
-function incheonFilters(input) {
+function portalFlightIdentifier(input, native = true) {
+  if (native && input.identType === 'provider_id') {
+    if (!/^[A-Za-z0-9_-]{1,160}$/.test(input.ident ?? '')) throw new Error('Supply the flight record ID exactly as returned by this source.');
+    return { recordId: input.ident };
+  }
+  return { flightId: iataFlight(input) };
+}
+
+function incheonFilters(input, native) {
   if (input.airport && !['ICN', 'RKSI'].includes(input.airport)) {
     throw new Error('Set airport to ICN or RKSI for Incheon airport operations.');
   }
   const action = requireDirection(input) === 'arrival' ? 'Arrivals' : 'Departures';
-  const flightId = iataFlight(input);
-  const oppositeAirport = flightId ? undefined : input.oppositeAirport;
+  const { flightId, recordId } = portalFlightIdentifier(input, native);
+  const exact = flightId || recordId;
+  const oppositeAirport = exact ? undefined : input.oppositeAirport;
   if (oppositeAirport && !/^[A-Z]{3}$/.test(oppositeAirport)) {
     throw new Error('Use a three-letter IATA code for the opposite airport.');
   }
-  const routeFilterNote = flightId && input.oppositeAirport
-    ? 'Incheon searched by flight number and ICN arrival or departure. The opposite airport was omitted as a filter.'
+  const routeFilterNote = exact && input.oppositeAirport
+    ? 'Incheon searched the exact flight or record ID for ICN arrival or departure. The opposite airport was omitted as a filter.'
     : undefined;
-  return { action, flightId, oppositeAirport, routeFilterNote };
+  return { action, flightId, recordId, oppositeAirport, routeFilterNote };
 }
 
-function incheonSearchDate(input) {
+function koreanFlightDate(input, provider) {
   const today = kstDate();
   const date = input.date ?? today;
   const daysFromToday = (Date.parse(date) - Date.parse(today)) / DAY_MS;
   if (daysFromToday < -3 || daysFromToday > 6) {
-    throw new Error('Incheon airport accepts dates from three days ago through six days ahead in Korea time.');
+    throw new Error(`${provider} accepts dates from three days ago through six days ahead in Korea time.`);
   }
   return date.replaceAll('-', '');
 }
 
+function datedMovement(input, recordId) {
+  const time = koreaTimeFilters(input);
+  if (input.operation === 'history' && ((!time.date && !recordId) || (time.date && time.date > kstDate()))) {
+    throw new Error('Supply a current or past Korean date or the exact flight record ID for historical movements.');
+  }
+  return time;
+}
+
 function incheonDetailed(kind, key) {
   return (input, env) => {
-    const { action, flightId, oppositeAirport, routeFilterNote } = incheonFilters(input);
-    const time = koreaTimeFilters(input);
+    const { action, flightId, recordId, oppositeAirport, routeFilterNote } = incheonFilters(input);
+    const time = datedMovement(input, recordId);
     return endpoint(`https://apis.data.go.kr/B551177/StatusOf${kind}FlightsDeOdp/get${kind}${action}DeOdp`, {
       ...commonPortalParameters(input, env[key]),
-      searchday: incheonSearchDate(time),
-      from_time: time.fromTime ?? '0000',
-      to_time: time.toTime ?? '2400',
+      searchday: !recordId || time.date ? koreanFlightDate(time, 'Incheon airport') : undefined,
+      from_time: time.fromTime,
+      to_time: time.toTime,
       airport_code: oppositeAirport,
+      f_id: recordId,
       flight_id: flightId,
-      inqtimechcd: 'E',
-      lang: 'K',
+      inqtimechcd: kind === 'Passenger' ? 'E' : undefined,
     }, { routeFilterNote });
   };
 }
@@ -165,42 +187,57 @@ function incheonDetailed(kind, key) {
 const incheonCargo = incheonDetailed('Cargo', 'INCHEON_CARGO_SERVICE_KEY');
 const incheonPassengerDetail = incheonDetailed('Passenger', 'INCHEON_PASSENGER_SERVICE_KEY');
 
-function incheonFlights(input, env) {
-  const { action, flightId, oppositeAirport, routeFilterNote } = incheonFilters(input);
-  const time = koreaTimeFilters(input);
+function incheonFlights(input, env, aircraftRole) {
+  const { action, flightId, recordId, oppositeAirport, routeFilterNote } = incheonFilters(input);
+  const time = datedMovement(input, recordId);
   return endpoint(`https://apis.data.go.kr/B551177/statusOfAllFltDeOdp/getFlt${action}DeOdp`, {
     ...commonPortalParameters(input, env.INCHEON_ALL_FLIGHTS_SERVICE_KEY),
-    searchDate: incheonSearchDate(time),
-    searchFrom: time.fromTime ?? '0000',
-    searchTo: time.toTime ?? '2400',
-    searchdtCode: 'E',
-    passengerOrCargo: 'P',
+    searchDate: time.date ? koreanFlightDate(time, 'Incheon airport') : undefined,
+    searchFrom: time.fromTime,
+    searchTo: time.toTime,
+    passengerOrCargo: aircraftRole,
     airportCode: oppositeAirport,
+    fid: recordId,
     flightId,
   }, { routeFilterNote });
 }
 
+const incheonAllCargo = (input, env) => incheonFlights(input, env, 'C');
+
 function incheonCargoToday(input, env) {
-  const { action, flightId, oppositeAirport, routeFilterNote } = incheonFilters(input);
+  const { action, flightId, oppositeAirport, routeFilterNote } = incheonFilters(input, false);
   const time = koreaTimeFilters(input);
   if (time.date && time.date !== kstDate()) {
     throw new Error('Incheon same-day cargo accepts today in Korea time. Use detailed cargo for other supported dates.');
   }
-  if ((input.page ?? 1) !== 1) throw new Error('Incheon same-day cargo has no pagination. Filter by flight, route, or time.');
+  if (input.cursor || (input.page ?? 1) !== 1) throw new Error('Incheon same-day cargo has no pagination. Filter by flight, route, or time.');
   return endpoint(`https://apis.data.go.kr/B551177/StatusOfCargoFlights/getCargo${action}`, {
     serviceKey: env.INCHEON_CARGO_TODAY_SERVICE_KEY,
-    from_time: time.fromTime ?? '0000',
-    to_time: time.toTime ?? '2400',
+    from_time: time.fromTime,
+    to_time: time.toTime,
     airport: oppositeAirport,
     flight_id: flightId,
-    lang: 'K',
     type: input.format ?? 'json',
   }, { routeFilterNote });
 }
 
+function incheonPassengerTimetable(input, env) {
+  if (input.airport && !['ICN', 'RKSI'].includes(input.airport)) throw new Error('Set airport to ICN or RKSI for the Incheon passenger timetable.');
+  if (!/^[A-Z]{3}$/.test(input.oppositeAirport ?? '')) throw new Error('Supply the opposite airport as a three-letter IATA code for the Incheon timetable.');
+  if (input.ident || input.identType || input.market || hasTimeFilter(input)) {
+    throw new Error('The Incheon recurring timetable filters by route and direction. Dates, weekdays and flight numbers are provided in the response.');
+  }
+  const action = requireDirection(input) === 'arrival' ? 'Arrivals' : 'Departures';
+  return endpoint(`https://apis.data.go.kr/B551177/PaxFltSched/getPaxFltSched${action}`, {
+    ...commonPortalParameters(input, env.INCHEON_PASSENGER_TIMETABLE_SERVICE_KEY),
+    airport: input.oppositeAirport,
+  }, { timeFilterNote: 'Published seasonal timetable with validity dates and operating weekdays.' });
+}
+
 function kacSchedule(input, env) {
-  if (input.start || input.end || input.fromTime || input.toTime) {
-    throw new Error('KAC schedules accept a date filter. Omit the time filters.');
+  const time = koreaTimeFilters(input);
+  if ((time.fromTime && time.fromTime !== '0000') || (time.toTime && time.toTime !== '2400')) {
+    throw new Error('KAC schedules only support whole-day date filters.');
   }
   const ident = iataFlight(input);
   if ((input.airport || input.oppositeAirport || input.operation === 'airport' || !ident) && !KAC_AIRPORTS.has(input.airport)) {
@@ -217,7 +254,7 @@ function kacSchedule(input, env) {
   }
   return endpoint(`https://apis.data.go.kr/B551178/flight-schedule/${domestic ? 'dom' : 'int'}`, {
     ...commonPortalParameters(input, env.KAC_SCHEDULE_SERVICE_KEY),
-    schDate: (input.date ?? kstDate()).replaceAll('-', ''),
+    schDate: (time.date ?? kstDate()).replaceAll('-', ''),
     schDeptCityCode: arrival ? input.oppositeAirport : input.airport,
     schArrvCityCode: arrival ? input.airport : input.oppositeAirport,
     schAirLine: domestic ? ident?.slice(0, 2) : undefined,
@@ -226,7 +263,7 @@ function kacSchedule(input, env) {
 }
 
 function kacRealtimeParameters(input, serviceKey) {
-  if (input.oppositeAirport || (input.page ?? 1) !== 1) {
+  if (input.oppositeAirport || input.cursor || (input.page ?? 1) !== 1) {
     throw new Error('This KAC real-time query does not accept route or pagination filters.');
   }
   if (input.airport && !KAC_AIRPORTS.has(input.airport)) {
@@ -269,39 +306,213 @@ function kacStatusDetail(input, env) {
     commonPortalParameters(input, env.KAC_FLIGHT_STATUS_SERVICE_KEY));
 }
 
-function airLabsFlight(input, env) {
-  checkLiveWindow(input, 'AirLabs', false);
-  if (!input.ident) throw new Error('Supply a flight number.');
-  if ((input.page ?? 1) !== 1) throw new Error('AirLabs single-flight lookup returns a single result.');
-  return endpoint('https://airlabs.co/api/v9/flight', {
-    api_key: env.AIRLABS_API_KEY,
-    ...flightFields(input),
+function validateKacAirport(airport) {
+  if (airport && !KAC_AIRPORTS.has(airport)) {
+    throw new Error('Use a KAC airport IATA code such as GMP, PUS or CJU.');
+  }
+}
+
+function kacRouteFields(input) {
+  validateKacAirport(input.airport);
+  if (input.oppositeAirport && (!input.airport || !/^[A-Z]{3}$/.test(input.oppositeAirport))) {
+    throw new Error('Supply a KAC airport and a three-letter IATA code for the opposite airport.');
+  }
+  if (!input.airport) return {};
+  return requireDirection(input) === 'arrival'
+    ? { depCityCode: input.oppositeAirport, arrvCityCode: input.airport }
+    : { depCityCode: input.airport, arrvCityCode: input.oppositeAirport };
+}
+
+const marketLine = { domestic: 'D', international: 'I' };
+
+function kacDatedStatus(input, env) {
+  const direction = requireDirection(input);
+  const { depCityCode, arrvCityCode } = kacRouteFields(input);
+  const { flightId, recordId } = portalFlightIdentifier(input);
+  if (!input.airport && !flightId && !recordId) throw new Error('Supply a KAC airport, flight number or flight record ID.');
+  const time = datedMovement(input, recordId);
+  const opposite = direction === 'arrival' ? { dep_airport_code: depCityCode } : { arr_airport_code: arrvCityCode };
+  return endpoint(`https://apis.data.go.kr/B551178/flight-status/${direction === 'arrival' ? 'arrival' : 'depart'}`, {
+    ...commonPortalParameters(input, env.KAC_FLIGHT_STATUS_SERVICE_KEY),
+    searchday: !recordId || time.date ? koreanFlightDate(time, 'KAC dated status') : undefined,
+    from_time: time.fromTime,
+    to_time: time.toTime === '2400' ? '2359' : time.toTime,
+    airport_code: input.airport,
+    f_id: recordId,
+    flight_id: flightId,
+    line: marketLine[input.market],
+    ...opposite,
+  }, { timeFilterBasis: time.fromTime || time.toTime ? 'scheduled_time' : undefined });
+}
+
+function kacTaxfreeStatus(input, env) {
+  const route = kacRouteFields(input);
+  const { flightId, recordId } = portalFlightIdentifier(input);
+  if (!input.airport && !flightId && !recordId) throw new Error('Supply a KAC airport, flight number or flight record ID.');
+  if (input.market || (input.direction && !input.airport)) throw new Error('This KAC status endpoint uses airport route codes and has no separate market or direction filter.');
+  const time = koreaTimeFilters(input);
+  return endpoint('https://apis.data.go.kr/B551178/flight-status/taxfree', {
+    ...commonPortalParameters(input, env.KAC_FLIGHT_STATUS_SERVICE_KEY),
+    searchDate: !recordId || time.date ? (time.date ?? kstDate()).replaceAll('-', '') : undefined,
+    searchFrom: time.fromTime,
+    searchTo: time.toTime === '2400' ? '2359' : time.toTime,
+    fid: recordId,
+    flightId,
+    ...route,
   });
 }
 
+function kacTaxfreeSchedule(input, env) {
+  const route = kacRouteFields(input);
+  const { flightId, recordId } = portalFlightIdentifier(input);
+  if (!input.airport && !flightId && !recordId) throw new Error('Supply a KAC airport, flight number or flight record ID.');
+  if (hasTimeFilter(input)) throw new Error('This KAC timetable has no date or time filter. Use kac_schedule for a specific date.');
+  if (!input.market && !input.oppositeAirport) throw new Error('Set market to domestic or international, or provide the opposite airport.');
+  if (input.direction && !input.airport) throw new Error('Supply the airport for a departure or arrival timetable filter.');
+  const domestic = input.market ? input.market === 'domestic' : KAC_AIRPORTS.has(input.oppositeAirport) || input.oppositeAirport === 'ICN';
+  return endpoint(`https://apis.data.go.kr/B551178/flight-schedule/taxfree-${domestic ? 'dom' : 'int'}`, {
+    ...commonPortalParameters(input, env.KAC_SCHEDULE_SERVICE_KEY),
+    fid: recordId,
+    flightId,
+    ...route,
+  });
+}
+
+function kacAircraftStatus(input, env) {
+  validateKacAirport(input.airport);
+  if (input.direction || hasTimeFilter(input)) {
+    throw new Error('This KAC aircraft feed shows current operations with no direction or generic movement window filter.');
+  }
+  const registration = input.identType === 'registration' ? input.ident : undefined;
+  if (input.identType === 'registration' && !/^[A-Z0-9-]{1,12}$/.test(registration ?? '')) {
+    throw new Error('Supply the aircraft registration.');
+  }
+  const flightId = registration ? undefined : iataFlight(input);
+  if (!input.airport && !flightId && !registration) throw new Error('Supply a KAC airport, IATA flight number or aircraft registration.');
+  return endpoint('https://apis.data.go.kr/B551178/flight-aircraft-status/info', {
+    ...commonPortalParameters(input, env.KAC_AIRCRAFT_STATUS_SERVICE_KEY),
+    schAirCode: input.airport,
+    schFln: flightId,
+    Line: marketLine[input.market],
+    schAPLno: registration,
+  });
+}
+
+function flightAirportContext(input) {
+  if (input.operation === 'flight' && input.ident && input.airport && !input.direction && !input.oppositeAirport) {
+    return { routeFilterNote: 'The airport has no arrival or departure role in this request. Compare it with the returned origin and destination.' };
+  }
+}
+
+function airLabsFlight(input, env) {
+  if (!input.ident) throw new Error('Supply a flight number.');
+  const context = flightAirportContext(input);
+  if (input.airport && !context) return airLabsSchedule(input, env);
+  checkCommercialLiveFilters(input, 'AirLabs');
+  if ((input.page ?? 1) !== 1) throw new Error('AirLabs Flight Info returns one result and has no numeric pages.');
+  return endpoint('https://airlabs.co/api/v9/flight', {
+    api_key: env.AIRLABS_API_KEY,
+    ...flightFields(input),
+  }, context);
+}
+
 function airLabsSchedule(input, env) {
-  checkLiveWindow(input, 'AirLabs');
+  checkCommercialLiveFilters(input, 'AirLabs');
   if (!input.ident && !input.airport) throw new Error('Supply a flight number or airport for AirLabs schedules.');
   return endpoint('https://airlabs.co/api/v9/schedules', {
     api_key: env.AIRLABS_API_KEY,
     ...flightFields(input),
     ...airportFields(input),
     ...offsetPage(input, 50),
+  }, input.operation === 'flight' ? {
+    timeFilterNote: 'AirLabs used its live schedule (up to ten hours ahead) to apply airport filters.',
+  } : undefined);
+}
+
+function airLabsAircraftFilter(input) {
+  if (input.identType === 'icao24' && /^[A-F0-9]{6}$/.test(input.ident)) return { hex: input.ident };
+  if (input.identType === 'registration' && /^[A-Z0-9-]{1,12}$/.test(input.ident)) return { reg_number: input.ident };
+  throw new Error('Use an ICAO24 address or registration for AirLabs aircraft lookups.');
+}
+
+function airLabsLive(input, env) {
+  checkCommercialLiveFilters(input, 'AirLabs');
+  if (!input.ident || input.limit != null || (input.page ?? 1) !== 1) {
+    throw new Error('AirLabs live positions use one known identifier and have no page or result limit.');
+  }
+  const filters = ['icao24', 'registration'].includes(input.identType) ? airLabsAircraftFilter(input) : flightFields(input);
+  return endpoint('https://airlabs.co/api/v9/flights', {
+    api_key: env.AIRLABS_API_KEY,
+    ...filters,
+    ...airportFields(input),
   });
 }
 
+function airLabsHistory(input, env) {
+  if (hasTimeFilter(input) || input.airport || input.oppositeAirport || input.direction || input.market || input.limit != null || (input.page ?? 1) !== 1) {
+    throw new Error('AirLabs historical beta filters by exact flight number and optional numeric offset. It does not accept a date or route.');
+  }
+  if (!input.ident || (input.cursor && !/^\d{1,9}$/.test(input.cursor))) {
+    throw new Error('Supply an exact flight number and a numeric cursor if paging an AirLabs history query.');
+  }
+  return endpoint('https://airlabs.co/api/v10/historical', {
+    api_key: env.AIRLABS_API_KEY,
+    ...flightFields(input),
+    offset: input.cursor,
+  });
+}
+
+function airLabsAirline(input, env) {
+  const code = input.identType === 'iata' && /^[A-Z0-9]{2}$/.test(input.ident) ? 'iata_code'
+    : input.identType === 'icao' && /^[A-Z]{3}$/.test(input.ident) ? 'icao_code' : null;
+  if (!code) throw new Error('Supply an IATA or ICAO airline code for AirLabs.');
+  return endpoint('https://airlabs.co/api/v9/airlines', { api_key: env.AIRLABS_API_KEY, [code]: input.ident });
+}
+
 function aviationstackFlights(input, env) {
-  checkLiveWindow(input, 'Aviationstack');
+  if (input.operation === 'history' && !input.date) {
+    throw new Error('Supply one date for Aviationstack historical flights.');
+  }
+  if (input.start || input.end || input.fromTime || input.toTime) {
+    throw new Error('Aviationstack flights can filter by one calendar date, without clock bounds.');
+  }
+  if (input.date && input.date > wallAt(Date.now(), airportTimeZone(input) ?? 'UTC').slice(0, 10)) {
+    throw new Error('Use a schedule lookup for a future Aviationstack date.');
+  }
+  checkCommercialLiveFilters({ ...input, date: undefined }, 'Aviationstack');
   if (!input.ident && !input.airport) throw new Error('Supply a flight number or airport for Aviationstack.');
-  if ([input.airport, input.oppositeAirport].some((airport) => airport && !/^[A-Z]{3}$/.test(airport))) {
+  const context = flightAirportContext(input);
+  if (!context && [input.airport, input.oppositeAirport].some((airport) => airport && !/^[A-Z]{3}$/.test(airport))) {
     throw new Error('Use three-letter IATA airport codes for Aviationstack.');
   }
   return endpoint('https://api.apilayer.net/aviationstack/v1/flights', {
     access_key: env.AVIATIONSTACK_API_KEY,
+    flight_date: input.date,
     ...flightFields(input),
-    ...airportFields(input),
+    ...(context ? {} : airportFields(input)),
     ...offsetPage(input, 100),
-  });
+  }, { ...context, ...(input.date ? { timeFilterBasis: 'flight_date' } : {}) });
+}
+
+function aviationstackSchedule(input, env) {
+  if (!/^[A-Z]{3}$/.test(input.airport ?? '') || !input.date) {
+    throw new Error('Supply one IATA airport code and future date for Aviationstack schedules.');
+  }
+  if (input.ident || input.oppositeAirport || input.market || input.cursor || input.limit != null || (input.page ?? 1) !== 1 ||
+      input.start || input.end || input.fromTime || input.toTime) {
+    throw new Error('The Aviationstack future board filters one airport, direction and date. It does not document flight-number, route, clock or pagination filters.');
+  }
+  const zone = airportTimeZone(input);
+  const today = wallAt(Date.now(), zone ?? 'UTC').slice(0, 10);
+  if (input.date < today || (zone && input.date === today)) {
+    throw new Error('Aviationstack future schedules require a date after today at the airport.');
+  }
+  return endpoint('https://api.apilayer.net/aviationstack/v1/flightsFuture', {
+    access_key: env.AVIATIONSTACK_API_KEY,
+    iataCode: input.airport,
+    type: requireDirection(input),
+    date: input.date,
+  }, { timeFilterBasis: 'scheduled_airport_local_date' });
 }
 
 export const scheduleProviders = [
@@ -327,6 +538,17 @@ export const scheduleProviders = [
     operations: { flight: kacFlight },
   },
   {
+    id: 'kac_aircraft_status',
+    label: 'Korea Airports Corporation aircraft assignments',
+    docs: 'https://www.data.go.kr/data/15158519/openapi.do',
+    note: 'Current operations with aircraft type and registration. Select this source for aircraft assignments by IATA flight number, registration or KAC airport. This dataset requires its own portal approval.',
+    formats: ['json', 'xml'],
+    keys: ['KAC_AIRCRAFT_STATUS_SERVICE_KEY'],
+    explicitSelection: true,
+    limits: [{ requests: 5_000, windowMs: DAY_MS }],
+    operations: { flight: kacAircraftStatus, airport: kacAircraftStatus },
+  },
+  {
     id: 'kac_realtime_status',
     label: 'Korea Airports Corporation real-time airport operations',
     docs: 'https://www.data.go.kr/data/15158625/openapi.do',
@@ -347,6 +569,42 @@ export const scheduleProviders = [
     operations: { airport: kacStatusDetail },
   },
   {
+    id: 'kac_dated_status',
+    label: 'Korea Airports Corporation dated flight and delay status',
+    docs: 'https://www.data.go.kr/data/15158625/openapi.do',
+    note: 'Dated passenger movements, delays and cancellations from D−3 through D+6 in Korea time. Select this source for direction, airport, flight number or a native flight record ID. Time-of-day bounds use planned times.',
+    formats: ['json', 'xml'],
+    keys: ['KAC_FLIGHT_STATUS_SERVICE_KEY'],
+    explicitSelection: true,
+    routeOperations: ['flight', 'history', 'airport'],
+    limits: [{ requests: 5_000, windowMs: DAY_MS }],
+    operations: { flight: kacDatedStatus, history: kacDatedStatus, airport: kacDatedStatus },
+  },
+  {
+    id: 'kac_taxfree_status',
+    label: 'Korea Airports Corporation tax-free passenger movement feed',
+    docs: 'https://www.data.go.kr/data/15158625/openapi.do',
+    note: 'Additional passenger movement feed with KST date, route, flight number and native record ID filters. Select explicitly for this feed.',
+    formats: ['json', 'xml'],
+    keys: ['KAC_FLIGHT_STATUS_SERVICE_KEY'],
+    explicitSelection: true,
+    routeOperations: ['flight', 'airport'],
+    limits: [{ requests: 5_000, windowMs: DAY_MS }],
+    operations: { flight: kacTaxfreeStatus, airport: kacTaxfreeStatus },
+  },
+  {
+    id: 'kac_taxfree_schedule',
+    label: 'Korea Airports Corporation tax-free timetables',
+    docs: 'https://www.data.go.kr/data/15158949/openapi.do',
+    note: 'Select this timetable by domestic or international market and flight or KAC route. The native schedules have no operating-date filter.',
+    formats: ['json', 'xml'],
+    keys: ['KAC_SCHEDULE_SERVICE_KEY'],
+    explicitSelection: true,
+    routeOperations: ['schedule'],
+    limits: [{ requests: 5_000, windowMs: DAY_MS }],
+    operations: { schedule: kacTaxfreeSchedule },
+  },
+  {
     id: 'incheon_cargo_today',
     label: 'Incheon Airport same-day cargo status',
     docs: 'https://www.data.go.kr/data/15095068/openapi.do',
@@ -364,9 +622,9 @@ export const scheduleProviders = [
     note: 'ICN cargo arrivals or departures, KST D−3 to D+6 as available. Set direction. Date defaults to today in KST. Changed time is the airport’s reported schedule adjustment. Use an Encoding or Decoding service key. Development quota is 500 per day.',
     formats: ['json', 'xml'],
     keys: ['INCHEON_CARGO_SERVICE_KEY'],
-    routeOperations: ['flight', 'airport', 'schedule'],
+    routeOperations: ['flight', 'history', 'airport', 'schedule'],
     limits: [{ requests: 500, windowMs: DAY_MS }],
-    operations: { flight: incheonCargo, airport: incheonCargo, schedule: incheonCargo },
+    operations: { flight: incheonCargo, history: incheonCargo, airport: incheonCargo, schedule: incheonCargo },
   },
   {
     id: 'incheon_passenger',
@@ -375,9 +633,21 @@ export const scheduleProviders = [
     note: 'ICN passenger arrivals or departures from the detailed aircraft operations API, KST D−3 to D+6 as available. Set direction. Date defaults to today in KST. Use an Encoding or Decoding service key. Development quota is 500 per day.',
     formats: ['json', 'xml'],
     keys: ['INCHEON_ALL_FLIGHTS_SERVICE_KEY'],
-    routeOperations: ['flight', 'airport', 'schedule'],
+    routeOperations: ['flight', 'history', 'airport', 'schedule'],
     limits: [{ requests: 500, windowMs: DAY_MS }],
-    operations: { flight: incheonFlights, airport: incheonFlights, schedule: incheonFlights },
+    operations: { flight: incheonFlights, history: incheonFlights, airport: incheonFlights, schedule: incheonFlights },
+  },
+  {
+    id: 'incheon_all_cargo',
+    label: 'Incheon Airport detailed aircraft operations (cargo mode)',
+    docs: 'https://www.data.go.kr/data/15140153/openapi.do',
+    note: 'Explicit cargo mode of the all-flight dataset with registration, equipment type and stand. Uses the same service key and date coverage as incheon_passenger.',
+    formats: ['json', 'xml'],
+    keys: ['INCHEON_ALL_FLIGHTS_SERVICE_KEY'],
+    explicitSelection: true,
+    routeOperations: ['flight', 'history', 'airport', 'schedule'],
+    limits: [{ requests: 500, windowMs: DAY_MS }],
+    operations: { flight: incheonAllCargo, history: incheonAllCargo, airport: incheonAllCargo, schedule: incheonAllCargo },
   },
   {
     id: 'incheon_passenger_detail',
@@ -386,28 +656,51 @@ export const scheduleProviders = [
     note: 'ICN passenger arrivals or departures, KST D−3 to D+6 as available. Set direction. Date defaults to today in KST. Use an Encoding or Decoding service key. Development quota is 500 per day.',
     formats: ['json', 'xml'],
     keys: ['INCHEON_PASSENGER_SERVICE_KEY'],
-    routeOperations: ['flight', 'airport', 'schedule'],
+    routeOperations: ['flight', 'history', 'airport', 'schedule'],
     limits: [{ requests: 500, windowMs: DAY_MS }],
-    operations: { flight: incheonPassengerDetail, airport: incheonPassengerDetail, schedule: incheonPassengerDetail },
+    operations: { flight: incheonPassengerDetail, history: incheonPassengerDetail, airport: incheonPassengerDetail, schedule: incheonPassengerDetail },
+  },
+  {
+    id: 'incheon_passenger_timetable',
+    label: 'Incheon Airport published recurring passenger timetable',
+    docs: 'https://www.data.go.kr/data/15095059/openapi.do',
+    note: 'Select for the published seasonal ICN passenger timetable by direction and opposite IATA airport. Returns validity dates and operating weekdays. This dataset requires its own portal approval.',
+    formats: ['json', 'xml'],
+    keys: ['INCHEON_PASSENGER_TIMETABLE_SERVICE_KEY'],
+    explicitSelection: true,
+    routeOperations: ['schedule'],
+    limits: [{ requests: 1_000, windowMs: DAY_MS }],
+    operations: { schedule: incheonPassengerTimetable },
   },
   {
     id: 'airlabs',
     label: 'AirLabs',
     docs: 'https://airlabs.co/docs/schedules',
-    note: 'A single nearest flight or a live schedule up to 10 hours ahead. Free keys allow 1,000 requests per month, up to 50 schedule results per request, and limited fields.',
+    note: 'Live flight, position and airport schedule lookups, plus exact aircraft, airport and airline reference queries. Historical flight-number lookup uses the v10 beta and has no date filter.',
     keys: ['AIRLABS_API_KEY'],
-    routeOperations: ['airport', 'schedule'],
+    airportInfoOnly: true,
+    airportInfo(input, env) {
+      const code = input.airport.length === 3 ? 'iata_code' : 'icao_code';
+      return endpoint('https://airlabs.co/api/v9/airports', { api_key: env.AIRLABS_API_KEY, [code]: input.airport });
+    },
+    routeOperations: ['flight', 'live', 'airport', 'schedule'],
     limits: [{ requests: 1_000, windowMs: MONTH_MS }],
-    operations: { flight: airLabsFlight, airport: airLabsSchedule, schedule: airLabsSchedule },
+    operations: {
+      flight: airLabsFlight, live: airLabsLive, history: airLabsHistory, airport: airLabsSchedule, schedule: airLabsSchedule,
+      aircraft(input, env) {
+        return endpoint('https://airlabs.co/api/v9/fleets', { api_key: env.AIRLABS_API_KEY, ...airLabsAircraftFilter(input), limit: 1 });
+      },
+      airline_info: airLabsAirline,
+    },
   },
   {
     id: 'aviationstack',
     label: 'Aviationstack',
     docs: 'https://docs.apilayer.com/aviationstack/docs/api-documentation',
-    note: 'Real-time flights on the 100-requests-per-month free personal plan. Date-based history and future schedules require paid access.',
+    note: 'Real-time flights on the 100-requests-per-month free personal plan. Date-based history and future airport boards require Basic or higher. Future boards use one IATA airport, direction and date.',
     keys: ['AVIATIONSTACK_API_KEY'],
-    routeOperations: ['flight', 'airport'],
+    routeOperations: ['flight', 'airport', 'history'],
     limits: [{ requests: 100, windowMs: MONTH_MS }],
-    operations: { flight: aviationstackFlights, airport: aviationstackFlights },
+    operations: { flight: aviationstackFlights, airport: aviationstackFlights, history: aviationstackFlights, schedule: aviationstackSchedule },
   },
 ];
