@@ -1,0 +1,10 @@
+dist/
+node_modules/
+.env*
+!.env.example
+.dev.vars*
+credentials*.json
+opensky-credentials*.json
+.sites-checkout*/
+.sites-runtime/
+.DS_Store
