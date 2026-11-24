@@ -175,19 +175,19 @@ function kacSchedule(input, env) {
   if (input.start || input.end || input.fromTime || input.toTime) {
     throw new Error('KAC schedules accept a date filter. Omit the time filters.');
   }
-  if (!KAC_AIRPORTS.has(input.airport)) {
+  const ident = iataFlight(input);
+  if ((input.airport || input.oppositeAirport || input.operation === 'airport' || !ident) && !KAC_AIRPORTS.has(input.airport)) {
     throw new Error('Set airport to the three-letter IATA code of a KAC airport, such as GMP, PUS, or CJU.');
   }
   if (input.oppositeAirport && !/^[A-Z]{3}$/.test(input.oppositeAirport)) {
     throw new Error('Use a three-letter IATA code for the opposite airport.');
   }
-  const arrival = requireDirection(input) === 'arrival';
+  const arrival = input.airport && requireDirection(input) === 'arrival';
   const domestic = input.market ? input.market === 'domestic' :
     KAC_AIRPORTS.has(input.oppositeAirport) || input.oppositeAirport === 'ICN';
   if (!input.market && !input.oppositeAirport) {
     throw new Error('Set market to domestic or international, or provide the opposite airport for KAC schedules.');
   }
-  const ident = iataFlight(input);
   return endpoint(`https://apis.data.go.kr/B551178/flight-schedule/${domestic ? 'dom' : 'int'}`, {
     ...commonPortalParameters(input, env.KAC_SCHEDULE_SERVICE_KEY),
     schDate: (input.date ?? kstDate()).replaceAll('-', ''),
@@ -278,7 +278,7 @@ export const scheduleProviders = [
     id: 'kac_schedule',
     label: 'Korea Airports Corporation schedules',
     docs: 'https://www.data.go.kr/data/15158949/openapi.do',
-    note: 'Schedules for the 14 KAC airports. Supply a KAC IATA airport, direction, and market or opposite airport. Date defaults to today in KST. Use an Encoding or Decoding service key. Development quota is 5,000 per day.',
+    note: 'Schedules for the 14 KAC airports. Supply an IATA flight number plus market, or a KAC IATA airport with direction and market or opposite airport. Date defaults to today in KST. Use an Encoding or Decoding service key. Development quota is 5,000 per day.',
     formats: ['json', 'xml'],
     keys: ['KAC_SCHEDULE_SERVICE_KEY'],
     routeOperations: ['airport', 'schedule'],

@@ -89,6 +89,21 @@ test("private NDJSON emits each raw provider response as it completes", { timeou
   assert.equal((await stream.next()).done, true);
 });
 
+test("direct NDJSON lookup excludes a provider before dispatch", { timeout: 5000 }, async (t) => {
+  const { started, releaseSlow } = stubProviders(t);
+  releaseSlow();
+  const response = await worker.fetch(new Request("https://test.example/lookup/stream", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...args, excludeProviders: ["adsb_lol"] }),
+  }), env);
+  const records = [];
+  for await (const line of lines(response.body)) records.push(JSON.parse(line));
+  assert.deepEqual(started, new Set(["avioadsb.org"]));
+  assert.deepEqual(records.map(({ type }) => type), ["provider", "complete"]);
+  assert.equal(records[0].raw_body, fastRaw);
+  assert.deepEqual(records[1].structuredContent.providers.map(({ provider }) => provider), ["avioadsb"]);
+});
+
 test("MCP streams progress first, then one tool result with all raw bodies", { timeout: 5000 }, async (t) => {
   const { started, releaseSlow } = stubProviders(t);
   const request = new Request("https://test.example/mcp", {
