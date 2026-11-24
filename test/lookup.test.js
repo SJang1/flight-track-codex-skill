@@ -198,7 +198,7 @@ test("raw bodies and advisory pacing through MCP tools/call", async (t) => {
       assert.equal(url.searchParams.get("serviceKey"), key);
       const allFlights = url.pathname.includes("/statusOfAllFltDeOdp/");
       assert.equal(url.searchParams.get(allFlights ? "flightId" : "flight_id"), "KE703");
-      assert.equal(url.searchParams.get(allFlights ? "airportCode" : "airport_code"), "NRT");
+      assert.equal(url.searchParams.has(allFlights ? "airportCode" : "airport_code"), false);
       assert.equal(url.searchParams.get("passengerOrCargo"), allFlights ? "P" : null);
       return Response.json({ reflected: key, encoded: encodeURIComponent(key) });
     };
@@ -210,6 +210,7 @@ test("raw bodies and advisory pacing through MCP tools/call", async (t) => {
     assert.equal(paired.structuredContent.providers.length, 3);
     for (const row of paired.structuredContent.providers) {
       assert.equal(row.status, "ok");
+      assert.ok(row.route_filter_note);
       assert.equal(row.credential_redacted, true);
       assert.deepEqual(JSON.parse(paired.content[row.raw_body_content_index].text), { reflected: "[REDACTED]", encoded: "[REDACTED]" });
     }
@@ -296,8 +297,10 @@ test("airport context returns reference data with flight results and respects pr
   const airportRows = rows.filter(({ result_kind }) => result_kind === "airport_info");
   assert.deepEqual(airportRows.map(({ airport_code }) => airport_code).sort(), ["ICN", "NRT"]);
   assert.ok(airportRows.every((source) => result.content[source.raw_body_content_index].text === raw));
-  assert.equal(requests.find((url) => url.hostname === "apis.data.go.kr").searchParams.get("airport_code"), "NRT");
-  assert.equal(result.structuredContent.recommended_next_lookup_at, rows.find(({ provider }) => provider === "incheon_passenger_detail").recommended_next_at);
+  const incheon = rows.find(({ provider }) => provider === "incheon_passenger_detail");
+  assert.equal(requests.find((url) => url.hostname === "apis.data.go.kr").searchParams.has("airport_code"), false);
+  assert.ok(incheon.route_filter_note);
+  assert.equal(result.structuredContent.recommended_next_lookup_at, incheon.recommended_next_at);
 
   requests.length = 0;
   const defaults = await call("aviation_lookup", flight, env);
@@ -307,6 +310,7 @@ test("airport context returns reference data with flight results and respects pr
   assert.deepEqual(requests.filter((url) => url.hostname === "fr24api.flightradar24.com").map((url) => url.pathname), [
     "/api/live/flight-positions/full",
   ]);
+  assert.equal(requests.find((url) => url.hostname === "fr24api.flightradar24.com").searchParams.get("routes"), "ICN-NRT");
 
   requests.length = 0;
   const onlyFr24 = await call("aviation_lookup", { ...flight, providers: ["flightradar24"] }, env);
@@ -318,6 +322,63 @@ test("airport context returns reference data with flight results and respects pr
   requests.length = 0;
   await call("aviation_lookup", { ...flight, providers: ["incheon_passenger_detail", "freeairportdb"], excludeProviders: ["freeairportdb"] }, env);
   assert.deepEqual(requests.map((url) => url.hostname), ["apis.data.go.kr"]);
+});
+
+test("Incheon endpoints keep flight and time filters and apply opposite airport only for route searches", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-11-24T20:00:00Z"));
+  const urls = new Map();
+  const raw = '{ "flightId": "FX5926", "airportCode": "ANC" }';
+  t.mock.method(globalThis, "fetch", async (url) => {
+    urls.set(url.pathname, url.searchParams);
+    return new Response(raw);
+  });
+
+  const endpoints = [
+    {
+      provider: "incheon_cargo", serviceKey: "INCHEON_CARGO_SERVICE_KEY",
+      action: "StatusOfCargoFlightsDeOdp/getCargoArrivalsDeOdp",
+      flight: "flight_id", airport: "airport_code", date: "searchday", from: "from_time", to: "to_time",
+    },
+    {
+      provider: "incheon_cargo_today", serviceKey: "INCHEON_CARGO_TODAY_SERVICE_KEY",
+      action: "StatusOfCargoFlights/getCargoArrivals",
+      flight: "flight_id", airport: "airport", from: "from_time", to: "to_time",
+    },
+    {
+      provider: "incheon_passenger", serviceKey: "INCHEON_ALL_FLIGHTS_SERVICE_KEY",
+      action: "statusOfAllFltDeOdp/getFltArrivalsDeOdp",
+      flight: "flightId", airport: "airportCode", date: "searchDate", from: "searchFrom", to: "searchTo",
+    },
+    {
+      provider: "incheon_passenger_detail", serviceKey: "INCHEON_PASSENGER_SERVICE_KEY",
+      action: "StatusOfPassengerFlightsDeOdp/getPassengerArrivalsDeOdp",
+      flight: "flight_id", airport: "airport_code", date: "searchday", from: "from_time", to: "to_time",
+    },
+  ];
+  const input = {
+    operation: "airport", providers: endpoints.map(({ provider }) => provider),
+    airport: "ICN", oppositeAirport: "NRT", direction: "arrival", date: "2026-11-25", fromTime: "0600", toTime: "1000",
+  };
+  const env = Object.fromEntries(endpoints.map(({ serviceKey }) => [serviceKey, `mock-${serviceKey}`]));
+
+  for (const ident of ["FX5926", undefined]) {
+    const filters = ident ? { operation: "flight", ident, identType: "flight_number" } : {};
+    const { structuredContent, content } = await call("aviation_lookup", { ...input, ...filters }, env);
+    assert.equal(urls.size, endpoints.length);
+    for (const endpoint of endpoints) {
+      const upstream = urls.get(`/B551177/${endpoint.action}`);
+      const row = structuredContent.providers.find(({ provider }) => provider === endpoint.provider);
+      assert.equal(row.status, "ok");
+      assert.equal(content[row.raw_body_content_index].text, raw);
+      assert.equal(Boolean(row.route_filter_note), Boolean(ident));
+      assert.equal(upstream.get(endpoint.airport), ident ? null : "NRT");
+      assert.equal(upstream.get(endpoint.flight), ident ?? null);
+      assert.equal(upstream.get(endpoint.from), "0600");
+      assert.equal(upstream.get(endpoint.to), "1000");
+      if (endpoint.date) assert.equal(upstream.get(endpoint.date), "20261125");
+    }
+    urls.clear();
+  }
 });
 
 test("provider filters apply before credential requests, including in native FR24 lookups", async (t) => {
@@ -455,4 +516,56 @@ test("KAC real-time status and flight-number search use their documented endpoin
     assert.equal(structuredContent.providers[0].status, "unsupported_input");
   }
   assert.equal(pulls, lookups.length);
+});
+
+test("Korean airport adapters preserve equivalent UTC and local windows with endpoint-specific midnight bounds", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-11-24T20:00:00Z"));
+  const urls = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    urls.push(url);
+    return Response.json({ response: {} });
+  });
+
+  const date = "2026-11-25";
+  const local = { date, fromTime: "06:00", toTime: "10:00" };
+  const utc = { start: "2026-11-24T21:00:00Z", end: "2026-11-25T01:00:00Z" };
+  const midnight = { start: "2026-11-25T14:00:00Z", end: "2026-11-25T15:00:00Z" };
+  const nextDay = { ...midnight, end: "2026-11-25T16:00:00Z" };
+  const cases = [
+    {
+      input: { operation: "flight", ident: "FX5926", identType: "flight_number", airport: "ICN", direction: "arrival", providers: ["incheon_cargo"] },
+      env: { INCHEON_CARGO_SERVICE_KEY: "mock-incheon-cargo-key" },
+      path: "/B551177/StatusOfCargoFlightsDeOdp/getCargoArrivalsDeOdp",
+      dateField: "searchday", fromField: "from_time", toField: "to_time", midnightBound: "2400",
+    },
+    {
+      input: { operation: "airport", airport: "GMP", direction: "departure", providers: ["kac_realtime_status"] },
+      env: { KAC_FLIGHT_STATUS_SERVICE_KEY: "mock-kac-status-key" },
+      path: "/B551178/flight-status/info",
+      dateField: "schDate", fromField: "schStTime", toField: "schEdTime", midnightBound: "2359",
+    },
+  ];
+
+  for (const { input, env, path, dateField, fromField, toField, midnightBound } of cases) {
+    const first = urls.length;
+    for (const range of [local, utc, midnight]) {
+      const { structuredContent } = await call("aviation_lookup", { ...input, ...range }, env);
+      assert.equal(structuredContent.providers[0].status, "ok");
+    }
+    const [localUrl, utcUrl, midnightUrl] = urls.slice(first);
+    assert.equal(localUrl.pathname, path);
+    assert.equal(utcUrl.href, localUrl.href);
+    assert.equal(localUrl.searchParams.get(dateField), dateField === "searchday" ? "20261125" : null);
+    assert.equal(localUrl.searchParams.get(fromField), "0600");
+    assert.equal(localUrl.searchParams.get(toField), "1000");
+    assert.equal(midnightUrl.searchParams.get(fromField), "2300");
+    assert.equal(midnightUrl.searchParams.get(toField), midnightBound);
+
+    const { structuredContent } = await call("aviation_lookup", { ...input, ...nextDay }, env);
+    const [skipped] = structuredContent.providers;
+    assert.equal(skipped.status, "unsupported_input");
+    assert.equal(skipped.upstream_attempted, false);
+    assert.match(skipped.detail, /only one Korea-local day/);
+    assert.equal(urls.length, first + 3);
+  }
 });

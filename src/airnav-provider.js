@@ -1,3 +1,5 @@
+import { hasTimeFilter, timeWindow } from './lookup-time.js';
+
 const BASE_URL = 'https://api.airnavradar.com/v2';
 const DAY_MS = 86_400_000;
 
@@ -15,21 +17,12 @@ function aircraftFilter(input) {
   return null;
 }
 
-function timeWindow(input) {
-  let from;
-  let to;
-  if (input.start != null || input.end != null) {
-    from = Date.parse(input.start);
-    to = Date.parse(input.end);
-  } else if (/^\d{4}-\d{2}-\d{2}$/.test(input.date ?? '')) {
-    from = Date.parse(`${input.date}T00:00:00Z`);
-    if (!Number.isFinite(from) || new Date(from).toISOString().slice(0, 10) !== input.date) return null;
-    to = from + DAY_MS - 1;
-  }
-  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return null;
-
-  const fromDate = new Date(from).toISOString();
-  const toDate = new Date(to).toISOString();
+function dateFilters(input) {
+  const range = timeWindow(input);
+  if (!range) throw new Error('AirNav search requires date or a complete time window.');
+  const fromDate = new Date(range.begin).toISOString();
+  const untilMidnight = !input.start && !input.end && (!input.toTime || input.toTime === '2400');
+  const toDate = new Date(range.end - (untilMidnight ? 1 : 0)).toISOString();
   if (input.direction === 'arrival') return { arrivalFromDate: fromDate, arrivalToDate: toDate };
   if (input.direction === 'departure') return { departureFromDate: fromDate, departureToDate: toDate };
   return { fromDate, toDate };
@@ -53,38 +46,40 @@ function post(path, body, env, page) {
 
 function live(input, env) {
   const filter = aircraftFilter(input);
-  if (!filter || input.date != null || input.start != null || input.end != null) return null;
-  return post('live', filter, env);
+  if (!filter) return null;
+  if (hasTimeFilter(input)) throw new Error('Use flight or history for a timed AirNav search.');
+  return post('live', { ...filter, ...airportFilters(input) }, env);
 }
 
 function search(input, env, filter) {
-  const window = timeWindow(input);
-  if (!filter || !window) return null;
+  if (!filter) return null;
   const page = Number.isInteger(input.page) && input.page > 0 ? input.page : 1;
-  const body = { ...filter, ...window, page, pageSize: 1, includeFlightPaths: false, includeFlightUrls: true };
+  const body = { ...filter, ...airportFilters(input), ...dateFilters(input), page, pageSize: 1, includeFlightPaths: false, includeFlightUrls: true };
   return post('search', body, env, page);
 }
 
-function airportSearch(input, env) {
-  if (!/^[A-Z]{3,4}$/.test(input.airport ?? '')) return null;
-  const aircraft = input.ident === undefined ? {} : aircraftFilter(input);
-  if (!aircraft) return null;
+function airportFilters(input) {
+  if (!input.airport) {
+    if (input.oppositeAirport) throw new Error('Supply the primary airport for an AirNav route lookup.');
+    return {};
+  }
   if (!input.direction) {
     if (input.oppositeAirport) throw new Error('Set direction for an AirNav route lookup.');
-    return search(input, env, { ...aircraft, toOrFromAirports: [input.airport] });
+    return { toOrFromAirports: [input.airport] };
   }
 
+  const airport = input.airport === 'ICN' ? 'RKSI' : input.airport;
+  const opposite = input.oppositeAirport === 'ICN' ? 'RKSI' : input.oppositeAirport;
   const icao = /^[A-Z]{4}$/;
-  if (!icao.test(input.airport) || (input.oppositeAirport && !icao.test(input.oppositeAirport))) {
+  if (!icao.test(airport) || (opposite && !icao.test(opposite))) {
     throw new Error('Use four-letter ICAO airport codes for an AirNav arrival, departure or route lookup.');
   }
-  const from = input.direction === 'departure' ? input.airport : input.oppositeAirport;
-  const to = input.direction === 'arrival' ? input.airport : input.oppositeAirport;
-  return search(input, env, {
-    ...aircraft,
+  const from = input.direction === 'departure' ? airport : opposite;
+  const to = input.direction === 'arrival' ? airport : opposite;
+  return {
     ...(from ? { fromAirports: [from] } : {}),
     ...(to ? { toAirports: [to] } : {}),
-  });
+  };
 }
 
 export const airnavProvider = {
@@ -93,7 +88,7 @@ export const airnavProvider = {
   docs: 'https://www.airnavradar.com/api/documentation',
   note: 'A local 31-day pacing horizon spreads the 100-credit allowance. The token renewal date is unknown. AirNav bills per result and the raw cost field shows the actual charge. Search returns a single result per page. Live requests are limited to a single exact identifier and can still return multiple records.',
   keys: ['AIRNAVRADAR_API_TOKEN'],
-  routeOperations: ['airport'],
+  routeOperations: ['airport', 'flight', 'history', 'live'],
   limits: [{ requests: 100, windowMs: 31 * DAY_MS }],
   quotaCost: 1,
   chargedCredits(body) {
@@ -107,7 +102,7 @@ export const airnavProvider = {
   operations: {
     live,
     flight(input, env) {
-      if (input.date != null || input.start != null || input.end != null) {
+      if (hasTimeFilter(input)) {
         return search(input, env, aircraftFilter(input));
       }
       return live(input, env);
@@ -115,6 +110,9 @@ export const airnavProvider = {
     history(input, env) {
       return search(input, env, aircraftFilter(input));
     },
-    airport: airportSearch,
+    airport(input, env) {
+      if (!/^[A-Z]{3,4}$/.test(input.airport ?? '')) return null;
+      return search(input, env, input.ident === undefined ? {} : aircraftFilter(input));
+    },
   },
 };

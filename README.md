@@ -77,9 +77,29 @@ Dots에서는 질문당 `aviation_lookup`을 한 번 호출합니다. `providers
 
 인천 출발이 확인된 항공편이면 `airport: "ICN"`과 `direction: "departure"`를 함께 보냅니다. Dots는 대화나 확인한 데이터에 나온 조건을 활용하고, 확실하지 않은 방향과 날짜는 비워 둡니다. 웹 편명 조회에서는 **추가 조건**에서 입력합니다.
 
+인천공항 API에서 편명으로 조회할 때는 ICN 출발·도착 경로와 IATA 편명을 사용합니다. 상대 공항이 함께 입력돼도 인천 어댑터는 그 코드로 편명을 걸러내지 않습니다. 이 경우 `route_filter_note`가 표시됩니다. 편명 없이 구간을 조회하면 상대 공항 코드로 검색합니다.
+
 현재 항공편의 실제 ADS-B `callsign`, `icao24` 또는 `registration`을 확인했다면 해당 값을 편명 조회에 함께 넣을 수 있습니다. 편명 조회 기능이 없는 위치 공급자에는 확인된 기체 식별자로 별도 위치 요청을 보냅니다. 응답의 `result_kind: "aircraft_position"`은 기체 관측값을 뜻합니다. 편명과 다른 식별자 사이의 관계는 요청에서 확인된 값을 사용합니다.
 
 공항 코드를 넣은 요청은 가능한 항공편 데이터와 공항 자체 정보를 함께 반환합니다. 공항 정보는 `result_kind: "airport_info"`와 `airport_code`로 표시합니다. 기본 공항 정보는 공개 FreeAirportDB에서 가져옵니다. 공급자를 직접 지정할 때는 `freeairportdb`를 목록에 넣어 공개 공항 정보를 받거나 `flightradar24`를 넣어 FR24 Airports Light를 함께 조회할 수 있습니다. 공급자 제외와 응답 형식 조건은 공항 정보에도 적용됩니다. [FreeAirportDB API](https://freeairportdb.com/api) · [OurAirports](https://ourairports.com/)
+
+### 날짜와 시각으로 좁히기
+
+공항 현지 날짜와 시각을 한 번 입력하면 각 어댑터가 공급자 형식으로 변환합니다. `fromTime`과 `toTime`에는 `06:00` 또는 `0600`을 사용할 수 있습니다. 한국 공항 코드는 `Asia/Seoul`을 사용합니다. 다른 공항의 시간대를 알고 있으면 `timeZone`에 IANA 이름을 넣습니다. 현지 시간대가 확인되면 날짜를 생략한 시각은 그곳의 오늘을 뜻합니다. 절대 시각을 알고 있으면 현지 시각 필드 대신 시간대 오프셋을 포함한 `start`와 `end`를 사용합니다.
+
+```json
+{"operation":"flight","identType":"flight_number","ident":"FX5926","airport":"ICN","direction":"arrival","date":"2026-11-25","fromTime":"06:00","toTime":"10:00"}
+```
+
+| 공급자 | 해당 시각 조건을 처리하는 방식 |
+| --- | --- |
+| 인천 상세 화물·여객·전체 운항 | 현지 날짜와 `HHmm`로 요청합니다. 상세 조회에서는 변경시간 기준을 선택합니다. [인천 화물 API](https://www.data.go.kr/data/15113461/openapi.do) |
+| Flightradar24 | 편명 `FX5926`과 지정 날짜 전체를 Flight Summary로 조회합니다. 편명 조회에서 날짜를 생략하면 실시간 위치를 요청합니다. 편명 없이 같은 공항 시간대로 조회하면 `2026-11-24T21:00:00Z`부터 `2026-11-25T01:00:00Z`까지 Flight Summary를 요청합니다. FR24 범위의 `time_filter_basis: "first_seen"`은 첫 관측 시각입니다. [FR24 운항 요약](https://fr24api.flightradar24.com/docs/endpoints/flight-summary) |
+| AirNav Radar | `arrivalFromDate`·`arrivalToDate`처럼 출도착 방향에 맞는 UTC 범위를 전송합니다. [AirNav OpenAPI](https://www.airnavradar.com/api/openapi) |
+| AeroDataBox | 편명 조회에는 날짜와 출도착 기준을 사용합니다. 공항 게시판 조회에는 공항 현지 시각 범위를 사용합니다. [AeroDataBox OpenAPI](https://doc.aerodatabox.com/docs/openapi-direct-v1.json) |
+| 한국공항공사 | 실시간 편명 검색과 목록은 현지 분 단위 필터를 사용합니다. 운항 스케줄은 날짜 단위로 조회합니다. [실시간 API](https://www.data.go.kr/data/15158625/openapi.do) · [스케줄 API](https://www.data.go.kr/data/15158949/openapi.do) |
+
+FR24나 AeroDataBox의 편명 조회에서 공항의 분 단위 조건을 생략한 경우 `time_filter_note`에 실제 조회 범위를 표시합니다. 요청한 범위를 지원하지 않는 경로는 그 이유를 `unsupported_input`으로 돌려줍니다.
 
 ### 구간 조회
 

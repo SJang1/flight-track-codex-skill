@@ -1,4 +1,5 @@
 import { retryAfterMs } from './quota.js';
+import { airportTimeZone, hasTimeFilter, localTimeWindow, timeWindow } from './lookup-time.js';
 
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
@@ -16,6 +17,8 @@ const AERODATABOX = 'https://api.aerodatabox.com';
 
 const flightSearchTypes = {
   flight_number: 'number',
+  iata: 'number',
+  icao: 'number',
   callsign: 'callsign',
   registration: 'reg',
   icao24: 'icao24',
@@ -65,29 +68,18 @@ function dateOnly(value) {
     && moment(value) !== null && new Date(value).toISOString().slice(0, 10) === value;
 }
 
-function timeRange(input) {
-  if (input.start != null || input.end != null) {
-    const begin = moment(input.start);
-    const end = moment(input.end);
-    return begin !== null && end !== null && end > begin ? { begin, end } : null;
-  }
-  if (!dateOnly(input.date)) return null;
-  const begin = moment(input.date);
-  return { begin, end: begin + DAY };
-}
-
 function openSkyRange(input) {
-  const range = timeRange(input);
+  const range = timeWindow(input);
   if (!range || range.end - range.begin > 2 * DAY) return null;
-  const begin = Math.floor(range.begin / SECOND);
+  const begin = Math.ceil(range.begin / SECOND);
   const end = Math.floor(range.end / SECOND);
   return end > begin ? { begin, end } : null;
 }
 
 function openSkyTrack(input) {
   const icao24 = asHex(input);
-  const dateTime = input.start ?? input.date;
-  const time = dateTime == null ? 0 : moment(dateTime);
+  if (input.fromTime || input.toTime || input.end) throw new Error('An OpenSky track accepts one timestamp in start. Use history for a time range.');
+  const time = input.start ? moment(input.start) : timeWindow(input)?.begin ?? 0;
   if (!icao24 || time === null) return null;
   return get(OPENSKY, '/tracks/all', {}, { icao24, time: Math.floor(time / SECOND) });
 }
@@ -135,11 +127,11 @@ async function authorizeOpenSky(_input, env, fetch) {
   return { headers: { Authorization: `Bearer ${accessToken}` } };
 }
 
-function flightAwareQuery(input, env, prefix) {
+function flightAwareQuery(input, env, prefix, requireRange = false) {
   if (!['flight_number', 'callsign', 'registration'].includes(input.identType) || !/^[A-Z0-9-]{2,12}$/i.test(input.ident ?? '')) return null;
   const identType = { flight_number: 'designator', registration: 'registration' }[input.identType];
-  const range = timeRange(input);
-  if (!range && (input.start != null || input.end != null || input.date != null)) return null;
+  const range = timeWindow(input);
+  if (!range && (hasTimeFilter(input) || requireRange)) throw new Error('Supply a date or both start and end for an AeroAPI flight time range.');
   return get(FLIGHTAWARE, `${prefix}/flights/${encodeURIComponent(input.ident.toUpperCase())}`,
     keyHeader(env, 'FLIGHTAWARE_API_KEY', 'x-apikey'), {
       ident_type: identType,
@@ -151,49 +143,51 @@ function flightAwareQuery(input, env, prefix) {
 
 function flightAwareInstance(input, env, suffix) {
   if (input.identType !== 'provider_id' || !/^[\da-z-]+-\d{9,11}-[\da-z-]+$/i.test(input.ident ?? '')) return null;
+  if (input.start || input.end || input.fromTime || input.toTime || (suffix !== 'track' && input.date)) {
+    throw new Error('This AeroAPI endpoint selects one flight by provider ID. Use flight or history for a time range.');
+  }
   const historical = suffix === 'track' && input.date != null && env.FLIGHTAWARE_HISTORY === 'true';
   const prefix = historical ? '/history' : '';
   return get(FLIGHTAWARE, `${prefix}/flights/${encodeURIComponent(input.ident)}/${suffix}`,
     keyHeader(env, 'FLIGHTAWARE_API_KEY', 'x-apikey'));
 }
 
-function localDate(value) {
-  if (typeof value !== 'string') return null;
-  const date = value.slice(0, 10);
-  return dateOnly(date) && moment(value) !== null ? date : null;
-}
-
-function airportWallTime(value, date, clock) {
-  if (typeof value === 'string' && localDate(value) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) {
-    return value.slice(0, 16);
-  }
-  if (!dateOnly(date) || typeof clock !== 'string') return null;
-  const match = /^([01]\d|2[0-3]):?([0-5]\d)$/.exec(clock);
-  if (match) return `${date}T${match[1]}:${match[2]}`;
-  if (clock === '2400' || clock === '24:00') {
-    return `${new Date(moment(date) + DAY).toISOString().slice(0, 10)}T00:00`;
-  }
-  return null;
-}
-
 function aeroDataBoxFlight(input, env) {
   const searchBy = flightSearchTypes[input.identType];
   if (!searchBy || !/^[\da-z-]{1,10}$/i.test(input.ident ?? '')) return null;
+  const airportClockBounds = Boolean(input.fromTime || input.toTime);
+  if (airportClockBounds && (input.operation !== 'flight' || searchBy !== 'number')) {
+    throw new Error('AeroDataBox exact flight lookups accept local dates only. Use an airport lookup for a time-of-day window.');
+  }
+  const lookup = airportClockBounds ? { ...input, fromTime: undefined, toTime: undefined } : input;
   let datePath = '';
-  if (input.date != null) {
+  let multiDay = false;
+  const targetZone = airportTimeZone({ airport: input.airport }) ?? input.timeZone;
+  if (input.date != null && (!input.timeZone || input.timeZone === targetZone)) {
     if (!dateOnly(input.date)) return null;
     datePath = `/${input.date}`;
-  } else if (input.start != null || input.end != null) {
-    const from = localDate(input.start);
-    const to = localDate(input.end);
-    if (!from || !to || to < from) return null;
-    datePath = from === to ? `/${from}` : `/${from}/${to}`;
+  } else if (hasTimeFilter(lookup)) {
+    const { from, to } = localTimeWindow(lookup, targetZone);
+    if (![from, to].every((time) => time.endsWith('T00:00:00')) || [input.start, input.end].some((time) => Date.parse(time) % SECOND)) {
+      throw new Error('AeroDataBox exact flight ranges must cover whole local dates. Use an airport lookup for narrower times.');
+    }
+    const firstDate = from.slice(0, 10);
+    const lastDate = new Date(Date.parse(to.slice(0, 10)) - DAY).toISOString().slice(0, 10);
+    multiDay = firstDate !== lastDate;
+    datePath = multiDay ? `/${firstDate}/${lastDate}` : `/${firstDate}`;
   }
-  return get(AERODATABOX, `/flights/${searchBy}/${encodeURIComponent(input.ident)}${datePath}`,
+  const request = get(AERODATABOX, `/flights/${searchBy}/${encodeURIComponent(input.ident)}${datePath}`,
     keyHeader(env, 'AERODATABOX_API_KEY'), {
-      withLocation: datePath.split('/').length < 3 ? true : undefined,
+      withLocation: multiDay ? undefined : true,
       dateLocalRole: { arrival: 'Arrival', departure: 'Departure' }[input.direction],
     });
+  if (!airportClockBounds) return request;
+  return {
+    ...request,
+    timeFilterNote: input.date
+      ? 'AeroDataBox searched the selected local flight date. Its flight-number endpoint does not apply airport movement clock bounds.'
+      : 'AeroDataBox searched the nearest operating date. Its flight-number endpoint does not apply airport movement clock bounds.',
+  };
 }
 
 function adsbAeroHistory(input) {
@@ -205,8 +199,8 @@ function adsbAeroHistory(input) {
     match = { registration_prefix: input.ident };
   }
   if (!match) return null;
-  const range = timeRange(input);
-  if (!range && (input.start != null || input.end != null || input.date != null)) return null;
+  const range = timeWindow(input);
+  if (!range && hasTimeFilter(input)) throw new Error('Supply both start and end for an adsb.aero time range.');
   const limit = Number.isInteger(input.limit) && input.limit > 0 ? Math.min(input.limit, 100) : 25;
   const body = { match, limit, include_path: false };
   if (range) {
@@ -233,6 +227,7 @@ export const trackingProviders = [
     limits: [{ requests: 1, windowMs: SECOND }],
     operations: {
       live(input) {
+        if (hasTimeFilter(input)) throw new Error('adsb.fi provides current positions only. Omit date and time filters.');
         const path = adsbPath(input, 'registration');
         return path ? get(ADSB_FI, `/v2${path}`) : null;
       },
@@ -259,12 +254,14 @@ export const trackingProviders = [
     },
     operations: {
       live(input, env) {
+        if (hasTimeFilter(input)) throw new Error('adsb.lol live lookups provide current positions only. Omit date and time filters.');
         const path = adsbPath(input, 'reg');
         return path ? get(ADSB_LOL, `/v2${path}`, keyHeader(env, 'ADSB_LOL_API_KEY')) : null;
       },
       track(input, env) {
         const icao = asHex(input);
-        if (!icao || input.date != null || input.start != null || input.end != null) return null;
+        if (!icao) return null;
+        if (hasTimeFilter(input)) throw new Error('This adsb.lol trace endpoint cannot filter by date or time.');
         return get(ADSB_LOL, `/1/trace/full/${icao}`, keyHeader(env, 'ADSB_LOL_API_KEY'));
       },
     },
@@ -285,6 +282,7 @@ export const trackingProviders = [
     },
     operations: {
       live(input, env) {
+        if (hasTimeFilter(input)) throw new Error('AvioADSB provides current positions only. Omit date and time filters.');
         const path = adsbPath(input, 'reg');
         return path ? get(AVIOADSB, path, keyHeader(env, 'AVIOADSB_API_KEY')) : null;
       },
@@ -301,6 +299,7 @@ export const trackingProviders = [
       history: adsbAeroHistory,
       track(input) {
         if (input.identType !== 'provider_id' || !/^[\da-f]{6}:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/i.test(input.ident ?? '')) return null;
+        if (hasTimeFilter(input)) throw new Error('An adsb.aero track is selected by provider ID. Use history for a time range.');
         return get(ADSB_AERO, `/flights/${encodeURIComponent(input.ident)}`);
       },
     },
@@ -321,7 +320,7 @@ export const trackingProviders = [
     cost(input) {
       if (input.operation === 'live') return 4;
       if (input.operation === 'track') return input.start != null || input.date != null ? 30 : 4;
-      const range = timeRange(input);
+      const range = timeWindow(input);
       if (!range || range.end - range.begin < DAY) return 4;
       const partitions = Math.floor(range.end / DAY) - Math.floor(range.begin / DAY);
       return partitions > 2 ? 60 * partitions : 30;
@@ -335,6 +334,7 @@ export const trackingProviders = [
     },
     operations: {
       live(input) {
+        if (hasTimeFilter(input)) throw new Error('This OpenSky lookup provides current positions only. Use history for a time range.');
         const icao24 = asHex(input);
         return icao24 ? get(OPENSKY, '/states/all', {}, { icao24 }) : null;
       },
@@ -346,9 +346,11 @@ export const trackingProviders = [
       },
       airport(input) {
         const direction = input.direction;
+        const airport = input.airport === 'ICN' ? 'RKSI' : input.airport;
         const range = openSkyRange(input);
-        if (!/^[A-Z]{4}$/i.test(input.airport ?? '') || !range || !['arrival', 'departure'].includes(direction)) return null;
-        return get(OPENSKY, `/flights/${direction}`, {}, { airport: input.airport.toUpperCase(), ...range });
+        if (input.ident) throw new Error('OpenSky airport movements cannot filter by flight identifier.');
+        if (!/^[A-Z]{4}$/i.test(airport ?? '') || !range || !['arrival', 'departure'].includes(direction)) return null;
+        return get(OPENSKY, `/flights/${direction}`, {}, { airport: airport.toUpperCase(), ...range });
       },
     },
   },
@@ -365,13 +367,13 @@ export const trackingProviders = [
       live: (input, env) => flightAwareInstance(input, env, 'position'),
       track: (input, env) => flightAwareInstance(input, env, 'track'),
       history(input, env) {
-        if (!timeRange(input)) return null;
-        return flightAwareQuery(input, env, env.FLIGHTAWARE_HISTORY === 'true' ? '/history' : '');
+        return flightAwareQuery(input, env, env.FLIGHTAWARE_HISTORY === 'true' ? '/history' : '', true);
       },
       airport(input, env) {
         if (!/^[A-Z0-9]{3,4}$/i.test(input.airport ?? '')) return null;
-        const range = timeRange(input);
-        if (!range && (input.start != null || input.end != null || input.date != null)) return null;
+        if (input.ident) throw new Error('The AeroAPI airport movement endpoint cannot filter by flight identifier.');
+        const range = timeWindow(input);
+        if (!range && hasTimeFilter(input)) throw new Error('Supply both start and end for an AeroAPI airport time range.');
         const future = range && range.begin > Date.now();
         const direction = { arrival: 'arrivals', departure: 'departures' }[input.direction];
         const path = direction ? `/${future ? 'scheduled_' : ''}${direction}` : '';
@@ -396,27 +398,26 @@ export const trackingProviders = [
         ? [{ requests: 6, windowMs: 5 * SECOND }, { requests: units, windowMs: MONTH }]
         : [{ requests: 6, windowMs: 5 * SECOND }];
     },
-    cost(input) {
-      const multiDay = localDate(input.start) !== localDate(input.end);
-      return !input.date && multiDay && input.operation !== 'airport' ? 6 : 2;
-    },
     quotaCost: 6,
     operations: {
       flight: aeroDataBoxFlight,
       live: aeroDataBoxFlight,
       history(input, env) {
-        return input.date != null || input.start != null ? aeroDataBoxFlight(input, env) : null;
+        return hasTimeFilter(input) ? aeroDataBoxFlight(input, env) : null;
       },
       airport(input, env) {
         if (!/^[A-Z]{3,4}$/i.test(input.airport ?? '')) return null;
+        if (input.ident) throw new Error('The AeroDataBox airport board cannot filter by flight identifier.');
         const code = input.airport.toUpperCase();
         const codeType = code.length === 3 ? 'iata' : 'icao';
         let range = '';
-        if (input.start != null || input.end != null || input.date != null) {
-          const from = airportWallTime(input.start, input.date, input.fromTime);
-          const to = airportWallTime(input.end, input.date, input.toTime);
-          if (!from || !to || from >= to) return null;
-          range = `/${encodeURIComponent(from)}/${encodeURIComponent(to)}`;
+        if (hasTimeFilter(input)) {
+          const targetZone = airportTimeZone({ airport: code }) ?? input.timeZone;
+          const { from, to } = localTimeWindow(input, targetZone);
+          if ([from, to].some((time) => !time.endsWith(':00')) || [input.start, input.end].some((time) => Date.parse(time) % MINUTE) || from >= to) {
+            throw new Error('AeroDataBox airport boards need an ordered airport-local range at minute precision.');
+          }
+          range = `/${encodeURIComponent(from.slice(0, 16))}/${encodeURIComponent(to.slice(0, 16))}`;
         }
         return get(AERODATABOX, `/flights/airports/${codeType}/${code}${range}`, keyHeader(env, 'AERODATABOX_API_KEY'), {
           direction: { arrival: 'Arrival', departure: 'Departure' }[input.direction], withLeg: true, withLocation: true,

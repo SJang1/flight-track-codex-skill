@@ -1,3 +1,5 @@
+import { hasTimeFilter, KOREA_TIME_ZONE, localTimeWindow } from './lookup-time.js';
+
 const DAY_MS = 86_400_000;
 const MONTH_MS = 31 * DAY_MS;
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
@@ -14,14 +16,14 @@ export function normalizePortalServiceKey(value) {
   }
 }
 
-function endpoint(address, parameters) {
+function endpoint(address, parameters, metadata) {
   const url = new URL(address);
   for (const [name, value] of Object.entries(parameters)) {
     if (value === undefined) continue;
     const parameter = name === 'serviceKey' ? normalizePortalServiceKey(String(value)) : String(value);
     url.searchParams.set(name, parameter);
   }
-  return { url };
+  return { url, ...metadata };
 }
 
 function flightFields({ ident, identType, operation }) {
@@ -68,8 +70,8 @@ function airportFields(input) {
 }
 
 function checkLiveWindow(input, provider, canFilterAirport = true) {
-  if (input.date || input.start || input.end || input.fromTime || input.toTime) {
-    throw new Error(`${provider} supports a live lookup here. Omit the date and time filters.`);
+  if (hasTimeFilter(input)) {
+    throw new Error(`${provider} does not support a requested time window on this live endpoint.`);
   }
   if (!canFilterAirport && (input.airport || input.oppositeAirport)) {
     throw new Error(`${provider} cannot apply airport filters to its single-flight lookup.`);
@@ -98,17 +100,39 @@ function kstDate() {
   return new Date(Date.now() + KST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
-function incheonDirection(input) {
-  if (input.start || input.end) {
-    throw new Error('Use a Korea-local date and HHmm time bounds for Incheon airport operations.');
+function koreaTimeFilters(input) {
+  const explicitRange = input.start || input.end;
+  if (!hasTimeFilter(input) || (!explicitRange && (!input.timeZone || input.timeZone === KOREA_TIME_ZONE))) return input;
+  if (explicitRange && !(input.start && input.end)) {
+    throw new Error('Supply both start and end for a Korean airport time window.');
   }
+  if (explicitRange && [input.start, input.end].some((value) => Date.parse(value) % 60_000 !== 0)) {
+    throw new Error('Korean airport feeds accept start and end at whole-minute precision.');
+  }
+  const { from, to } = localTimeWindow(input, KOREA_TIME_ZONE);
+  const date = from.slice(0, 10);
+  const midnightNextDay = new Date(Date.parse(`${date}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 19);
+  const toTime = to === midnightNextDay ? '2400' : to.slice(11, 16).replace(':', '');
+  if (to.slice(0, 10) !== date && toTime !== '2400') {
+    throw new Error('This Korean airport feed accepts only one Korea-local day per request.');
+  }
+  return { ...input, date, fromTime: from.slice(11, 16).replace(':', ''), toTime };
+}
+
+function incheonFilters(input) {
   if (input.airport && !['ICN', 'RKSI'].includes(input.airport)) {
     throw new Error('Set airport to ICN or RKSI for Incheon airport operations.');
   }
-  if (input.oppositeAirport && !/^[A-Z]{3}$/.test(input.oppositeAirport)) {
+  const action = requireDirection(input) === 'arrival' ? 'Arrivals' : 'Departures';
+  const flightId = iataFlight(input);
+  const oppositeAirport = flightId ? undefined : input.oppositeAirport;
+  if (oppositeAirport && !/^[A-Z]{3}$/.test(oppositeAirport)) {
     throw new Error('Use a three-letter IATA code for the opposite airport.');
   }
-  return requireDirection(input) === 'arrival' ? 'Arrivals' : 'Departures';
+  const routeFilterNote = flightId && input.oppositeAirport
+    ? 'Incheon searched by flight number and ICN arrival or departure. The opposite airport was omitted as a filter.'
+    : undefined;
+  return { action, flightId, oppositeAirport, routeFilterNote };
 }
 
 function incheonSearchDate(input) {
@@ -123,17 +147,18 @@ function incheonSearchDate(input) {
 
 function incheonDetailed(kind, key) {
   return (input, env) => {
-    const action = incheonDirection(input);
+    const { action, flightId, oppositeAirport, routeFilterNote } = incheonFilters(input);
+    const time = koreaTimeFilters(input);
     return endpoint(`https://apis.data.go.kr/B551177/StatusOf${kind}FlightsDeOdp/get${kind}${action}DeOdp`, {
       ...commonPortalParameters(input, env[key]),
-      searchday: incheonSearchDate(input),
-      from_time: input.fromTime ?? '0000',
-      to_time: input.toTime ?? '2400',
-      airport_code: input.oppositeAirport,
-      flight_id: iataFlight(input),
+      searchday: incheonSearchDate(time),
+      from_time: time.fromTime ?? '0000',
+      to_time: time.toTime ?? '2400',
+      airport_code: oppositeAirport,
+      flight_id: flightId,
       inqtimechcd: 'E',
       lang: 'K',
-    });
+    }, { routeFilterNote });
   };
 }
 
@@ -141,34 +166,36 @@ const incheonCargo = incheonDetailed('Cargo', 'INCHEON_CARGO_SERVICE_KEY');
 const incheonPassengerDetail = incheonDetailed('Passenger', 'INCHEON_PASSENGER_SERVICE_KEY');
 
 function incheonFlights(input, env) {
-  const action = incheonDirection(input);
+  const { action, flightId, oppositeAirport, routeFilterNote } = incheonFilters(input);
+  const time = koreaTimeFilters(input);
   return endpoint(`https://apis.data.go.kr/B551177/statusOfAllFltDeOdp/getFlt${action}DeOdp`, {
     ...commonPortalParameters(input, env.INCHEON_ALL_FLIGHTS_SERVICE_KEY),
-    searchDate: incheonSearchDate(input),
-    searchFrom: input.fromTime ?? '0000',
-    searchTo: input.toTime ?? '2400',
+    searchDate: incheonSearchDate(time),
+    searchFrom: time.fromTime ?? '0000',
+    searchTo: time.toTime ?? '2400',
     searchdtCode: 'E',
     passengerOrCargo: 'P',
-    airportCode: input.oppositeAirport,
-    flightId: iataFlight(input),
-  });
+    airportCode: oppositeAirport,
+    flightId,
+  }, { routeFilterNote });
 }
 
 function incheonCargoToday(input, env) {
-  const action = incheonDirection(input);
-  if (input.date && input.date !== kstDate()) {
+  const { action, flightId, oppositeAirport, routeFilterNote } = incheonFilters(input);
+  const time = koreaTimeFilters(input);
+  if (time.date && time.date !== kstDate()) {
     throw new Error('Incheon same-day cargo accepts today in Korea time. Use detailed cargo for other supported dates.');
   }
   if ((input.page ?? 1) !== 1) throw new Error('Incheon same-day cargo has no pagination. Filter by flight, route, or time.');
   return endpoint(`https://apis.data.go.kr/B551177/StatusOfCargoFlights/getCargo${action}`, {
     serviceKey: env.INCHEON_CARGO_TODAY_SERVICE_KEY,
-    from_time: input.fromTime ?? '0000',
-    to_time: input.toTime ?? '2400',
-    airport: input.oppositeAirport,
-    flight_id: iataFlight(input),
+    from_time: time.fromTime ?? '0000',
+    to_time: time.toTime ?? '2400',
+    airport: oppositeAirport,
+    flight_id: flightId,
     lang: 'K',
     type: input.format ?? 'json',
-  });
+  }, { routeFilterNote });
 }
 
 function kacSchedule(input, env) {
@@ -199,19 +226,23 @@ function kacSchedule(input, env) {
 }
 
 function kacRealtimeParameters(input, serviceKey) {
-  if (input.date || input.start || input.end || input.oppositeAirport || (input.page ?? 1) !== 1) {
-    throw new Error('This KAC real-time query does not accept date, route, or pagination filters.');
+  if (input.oppositeAirport || (input.page ?? 1) !== 1) {
+    throw new Error('This KAC real-time query does not accept route or pagination filters.');
   }
   if (input.airport && !KAC_AIRPORTS.has(input.airport)) {
     throw new Error('Use a KAC airport IATA code such as GMP, PUS or CJU, or omit the airport filter.');
+  }
+  const time = koreaTimeFilters(input);
+  if (time.date && time.date !== kstDate()) {
+    throw new Error('KAC real-time operations accept clock bounds for current operations only.');
   }
   return {
     serviceKey,
     schLineType: { domestic: 'D', international: 'I' }[input.market],
     schIOType: { arrival: 'I', departure: 'O' }[input.direction],
     schAirCode: input.airport,
-    schStTime: input.fromTime,
-    schEdTime: input.toTime,
+    schStTime: time.fromTime,
+    schEdTime: time.toTime === '2400' ? '2359' : time.toTime,
     type: input.format ?? 'json',
   };
 }
@@ -289,7 +320,7 @@ export const scheduleProviders = [
     id: 'kac_flight_status',
     label: 'Korea Airports Corporation live flight-number search',
     docs: 'https://www.data.go.kr/data/15160195/openapi.do',
-    note: 'Live status by IATA flight number for the 14 KAC airports. A KAC IATA airport filter is optional. Omit date. Use an Encoding or Decoding service key. Development quota is 5,000 per day.',
+    note: 'Live status by IATA flight number for the 14 KAC airports. A KAC IATA airport filter is optional. Optional time bounds use Korea-local HHmm for current operations. Use an Encoding or Decoding service key. Development quota is 5,000 per day.',
     formats: ['json', 'xml'],
     keys: ['KAC_FLIGHT_SEARCH_SERVICE_KEY'],
     limits: [{ requests: 5_000, windowMs: DAY_MS }],

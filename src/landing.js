@@ -161,6 +161,7 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
   ];
   const direction = { label: '출도착 구분', options: [['', '전체'], ['departure', '출발'], ['arrival', '도착']] };
   const dateRange = ['date', 'start', 'end'];
+  const airportTime = ['fromTime', 'toTime', 'timeZone'];
   const paging = ['page', 'limit', 'cursor'];
   const fieldSpecs = {
     identType: { label: '식별자 유형', options: identifiers },
@@ -176,20 +177,21 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
     direction,
     market: { label: '노선 구분', options: [['', '전체'], ['domestic', '국내선'], ['international', '국제선']] },
     format: { label: '응답 형식', options: [['', '공급자 기본값'], ['json', 'JSON'], ['xml', 'XML']] },
-    fromTime: { label: '공항 현지 시작 시각 (HHmm)', placeholder: '0900', pattern: '[0-9]{4}' },
-    toTime: { label: '공항 현지 종료 시각 (HHmm)', placeholder: '1800', pattern: '[0-9]{4}' },
+    fromTime: { label: '공항 현지 시작 시각', placeholder: '06:00', pattern: '[0-9]{2}:?[0-9]{2}' },
+    toTime: { label: '공항 현지 종료 시각', placeholder: '10:00', pattern: '[0-9]{2}:?[0-9]{2}' },
+    timeZone: { label: '공항 시간대 (IANA)', placeholder: '예: Asia/Seoul', maxLength: 64 },
     page: { label: '페이지', type: 'number', minimum: 1, maximum: 100 },
     limit: { label: '최대 결과 수', type: 'number', minimum: 1, maximum: 100 },
     cursor: { label: '페이지 커서', maxLength: 2048 },
   };
   const forms = {
-    flight: { fields: ['identType', 'ident'], example: 'KE703', optional: ['airport', 'oppositeAirport', 'direction', 'callsign', 'icao24', 'registration', ...dateRange, ...paging, 'format'] },
+    flight: { fields: ['identType', 'ident'], example: 'KE703', optional: ['airport', 'oppositeAirport', 'direction', 'callsign', 'icao24', 'registration', ...dateRange, ...airportTime, ...paging, 'format'] },
     live: { fields: ['identType', 'ident'], identType: 'callsign', example: 'KAL93', optional: ['limit', 'format'] },
     track: { fields: ['identType', 'ident'], identType: 'icao24', example: '71C597', optional: [...dateRange, ...paging, 'format'] },
-    history: { fields: ['identType', 'ident'], identType: 'icao24', example: '71C597', optional: [...dateRange, ...paging, 'format'] },
-    airport: { fields: ['airport', 'direction'], optional: [...dateRange, 'fromTime', 'toTime', 'market', ...paging, 'format'] },
-    route: { fields: ['airport', 'oppositeAirport'], optional: [...dateRange, 'fromTime', 'toTime', 'market', ...paging, 'format'] },
-    schedule: { fields: ['airport', 'direction', 'date', 'market'], optional: ['ident', 'oppositeAirport', 'fromTime', 'toTime', ...paging, 'format'] },
+    history: { fields: ['identType', 'ident'], identType: 'icao24', example: '71C597', optional: ['airport', ...dateRange, ...airportTime, ...paging, 'format'] },
+    airport: { fields: ['airport', 'direction'], optional: [...dateRange, ...airportTime, 'market', ...paging, 'format'] },
+    route: { fields: ['airport', 'oppositeAirport'], optional: [...dateRange, ...airportTime, 'market', ...paging, 'format'] },
+    schedule: { fields: ['airport', 'direction', 'date', 'market'], optional: ['ident', 'oppositeAirport', ...airportTime, ...paging, 'format'] },
   };
   const endpointNames = {
     airports_light: '공항 정보 (Light)', airports_full: '공항 정보 (Full)', airlines_light: '항공사 정보',

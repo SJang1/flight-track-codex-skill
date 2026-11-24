@@ -30,7 +30,7 @@ test('Flightradar24 sends UTC summary ranges, historical snapshots and track IDs
   const summary = operations.airport({ ...route, date: '2025-01-20' }, env);
   assert.equal(summary.url.pathname, '/api/flight-summary/light');
   assert.deepEqual(Object.fromEntries(summary.url.searchParams), {
-    routes: 'ICN-NRT', flight_datetime_from: '2025-01-20T00:00:00Z', flight_datetime_to: '2025-01-20T23:59:59Z', limit: '10',
+    routes: 'ICN-NRT', flight_datetime_from: '2025-01-19T15:00:00Z', flight_datetime_to: '2025-01-20T14:59:59Z', limit: '10',
   });
   const history = { operation: 'history', identType: 'callsign', ident: 'KAL703', start: '2025-01-20T03:00:00+09:00' };
   const range = operations.history({ ...history, end: '2025-01-20T06:30:00+09:00' }, env);
@@ -49,6 +49,40 @@ test('Flightradar24 sends UTC summary ranges, historical snapshots and track IDs
   assert.deepEqual(Object.fromEntries(legSummary.url.searchParams), { flight_ids: '333ca4a2' });
 });
 
+test('Flightradar24 uses a local clock window for the airport day', (t) => {
+  t.mock.method(Date, 'now', () => Date.parse('2026-11-24T23:00:00Z'));
+  const window = { ...route, airport: 'RKSI', fromTime: '0000', toTime: '0700' };
+  const summary = operations.airport(window, env);
+  assert.equal(summary.url.pathname, '/api/flight-summary/light');
+  assert.deepEqual(Object.fromEntries(summary.url.searchParams), {
+    routes: 'RKSI-NRT', flight_datetime_from: '2026-11-24T15:00:00Z', flight_datetime_to: '2026-11-24T22:00:00Z', limit: '10',
+  });
+  const datedWindow = operations.airport({ ...route, date: '2026-11-25', fromTime: '0600', toTime: '1000' }, env);
+  assert.deepEqual(Object.fromEntries(datedWindow.url.searchParams), {
+    routes: 'ICN-NRT', flight_datetime_from: '2026-11-24T21:00:00Z', flight_datetime_to: '2026-11-25T01:00:00Z', limit: '10',
+  });
+
+  const dstDay = operations.history({
+    ...liveFlight, operation: 'history', airport: 'JFK', date: '2025-03-09', timeZone: 'America/New_York',
+  }, env);
+  assert.deepEqual(Object.fromEntries(dstDay.url.searchParams), {
+    flights: 'KE703', airports: 'JFK', flight_datetime_from: '2025-03-09T05:00:00Z',
+    flight_datetime_to: '2025-03-10T03:59:59Z', limit: '10',
+  });
+
+  const budget = { FLIGHTRADAR24_MONTHLY_CREDITS: '6000' };
+  assert.deepEqual(flightradar24Provider.limits({ ...window, limit: 2 }, budget), [
+    { requests: 10, windowMs: 60_000 }, { requests: 1_000, windowMs: 31 * 86_400_000 },
+  ]);
+  assert.deepEqual(flightradar24Provider.limits({ ...liveFlight, fromTime: '0600', toTime: '1000', limit: 2 }, budget), [
+    { requests: 10, windowMs: 60_000 }, { requests: 375, windowMs: 31 * 86_400_000 },
+  ]);
+  const explicit = operations.flight({ ...liveFlight, start: '2026-11-25T06:00:00+09:00', end: '2026-11-25T10:00:00+09:00' }, env);
+  assert.deepEqual(Object.fromEntries(explicit.url.searchParams), {
+    flights: 'KE703', flight_datetime_from: '2026-11-24T21:00:00Z', flight_datetime_to: '2026-11-25T01:00:00Z', limit: '10',
+  });
+});
+
 test('Flightradar24 rejects filters it cannot send upstream', () => {
   assert.throws(() => operations.live({ operation: 'live', identType: 'icao24', ident: '4CAD41' }, env), /flight number, ADS-B callsign, or aircraft registration/);
   assert.throws(() => operations.airport({ operation: 'airport', identType: 'provider_id', ident: '333ca4a2' }, env), /IATA flight number/);
@@ -56,6 +90,10 @@ test('Flightradar24 rejects filters it cannot send upstream', () => {
   assert.throws(() => operations.airport({ ...route, direction: undefined }, env), /direction/);
   assert.throws(() => operations.flight({ ...liveFlight, page: 2 }, env), /pagination/);
   assert.throws(() => operations.flight({ ...liveFlight, start: '2025-01-01T00:00:00Z', end: '2025-01-16T00:00:00Z' }, env), /14 days/);
+  const fromTime = '0600';
+  const toTime = '1000';
+  assert.throws(() => operations.flight({ ...liveFlight, identType: 'callsign', ident: 'KAL703', fromTime, toTime }, env), /time ?zone|offset/i);
+  assert.throws(() => operations.live({ ...liveFlight, operation: 'live', airport: 'ICN', fromTime, toTime }, env), /histor|date|window|range/i);
   assert.equal(operations.schedule, undefined);
 });
 
@@ -94,6 +132,45 @@ async function callTool(name, args, env) {
 function lookupFr24(args, env) {
   return callTool('aviation_lookup', args, env);
 }
+
+test('Exact flight lookups preserve local clock filters for Incheon and select FR24 by flight number', async (t) => {
+  t.mock.method(Date, 'now', () => Date.parse('2026-11-25T03:00:00Z'));
+  const requests = [];
+  const raw = '{ "data": [] }\n';
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    requests.push(new URL(url));
+    return new Response(raw);
+  });
+
+  const flight = {
+    operation: 'flight', ident: 'FX5926', identType: 'flight_number', airport: 'ICN', direction: 'arrival',
+    fromTime: '06:00', toTime: '10:00',
+  };
+  for (const date of ['2026-11-25', undefined]) {
+    requests.length = 0;
+    const result = await lookupFr24({ ...flight, date }, { ...env, INCHEON_CARGO_SERVICE_KEY: 'mock-incheon-key' });
+
+    const fr24 = requests.filter(({ hostname }) => hostname === 'fr24api.flightradar24.com');
+    assert.deepEqual(fr24.map(({ pathname }) => pathname), [date ? '/api/flight-summary/light' : '/api/live/flight-positions/full']);
+    assert.deepEqual(Object.fromEntries(fr24[0].searchParams), {
+      flights: 'FX5926', airports: 'inbound:ICN', limit: '10',
+      ...(date ? { flight_datetime_from: '2026-11-24T15:00:00Z', flight_datetime_to: '2026-11-25T14:59:59Z' } : {}),
+    });
+    const incheon = requests.find(({ hostname }) => hostname === 'apis.data.go.kr');
+    assert.match(incheon.pathname, /getCargoArrivalsDeOdp$/);
+    assert.equal(incheon.searchParams.get('searchday'), '20261125');
+    assert.equal(incheon.searchParams.get('from_time'), '0600');
+    assert.equal(incheon.searchParams.get('to_time'), '1000');
+    assert.equal(incheon.searchParams.get('flight_id'), 'FX5926');
+    for (const provider of ['flightradar24', 'incheon_cargo']) {
+      const source = result.structuredContent.providers.find((row) => row.provider === provider);
+      assert.equal(source.status, 'ok');
+      assert.equal(source.data_request_attempted, true);
+      if (provider === 'flightradar24') assert.match(source.time_filter_note, /HHmm|clock|local time/i);
+      assert.equal(result.content[source.raw_body_content_index].text, raw);
+    }
+  }
+});
 
 const testFlightId = '333ca4a2';
 const timestamp = 1702383145;
@@ -173,6 +250,7 @@ test('Flightradar24 explicit requests enforce credentials and reject cross-provi
     { ...usage, providers: ['adsb_fi'] },
     { ...usage, providers: ['flightradar24', 'adsb_fi'] },
     { ...usage, ident: 'KE703' },
+    { ...usage, timeZone: 'Asia/Seoul' },
     { ...usage, fr24Params: { period: 'invalid' } },
     { ...usage, fr24Params: { period: '7d', limit: 4 } },
     { ...usage, fr24Endpoint: 'airports_full', fr24Params: { code: '../usage' } },
