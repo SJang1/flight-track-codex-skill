@@ -40,6 +40,9 @@ function checkOptions(input) {
 
 function filters(input) {
   const parameters = {};
+  if (input.identType === 'icao24') {
+    throw new Error('Flightradar24 position and summary requests use an IATA flight number, ADS-B callsign, or aircraft registration as the aircraft filter. ICAO24 is not a supported input filter.');
+  }
   if (input.ident != null || input.identType != null) {
     const match = identifierFilters[input.identType];
     if (!match?.[1]?.test(input.ident ?? '')) {

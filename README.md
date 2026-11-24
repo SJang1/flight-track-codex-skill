@@ -44,7 +44,7 @@ OpenSky의 `credentials.json`에서 `clientId` 값은 `OPENSKY_CLIENT_ID`, `clie
 
 ## 조회 방법
 
-Dots에서는 질문당 `aviation_lookup`을 한 번 호출합니다. `providers`를 생략하면 FR24를 포함해 요청 조건과 키 설정이 맞는 일반 조회 공급자에 병렬로 요청하고 완료 순서대로 결과를 모읍니다. FlightAware는 명시적으로 단독 선택합니다. 최종 종합과 판단은 Dots 에이전트가 담당합니다.
+Dots에서는 필요한 조회 유형마다 `aviation_lookup`을 호출합니다. 같은 항공편이라도 답변에 필요한 정보가 더 있으면 다른 조회 유형이나 확인된 식별자로 이어서 조회하는 것을 권장합니다. 예를 들어 `flight`에서 운항 상태와 기체 등록번호를 확인하고, 현재 좌표가 필요하면 그 등록번호로 `live`를 호출합니다. 실제 비행 경로가 필요하면 `track`을 사용합니다. `providers`를 생략하면 FR24를 포함해 요청 조건과 키 설정이 맞는 일반 조회 공급자에 병렬로 요청하고 완료 순서대로 결과를 모읍니다. FlightAware는 명시적으로 단독 선택합니다. 최종 종합과 판단은 Dots 에이전트가 담당합니다.
 
 | 도구 | 용도 |
 | --- | --- |
@@ -109,6 +109,8 @@ OpenSky의 최근 한 시점 위치가 필요하면 `live`에 ICAO24와 `start`�
 인천공항 API에서 편명으로 조회할 때는 ICN 출발·도착 경로와 IATA 편명을 사용합니다. 상대 공항이 함께 입력돼도 인천 어댑터는 그 코드로 편명을 걸러내지 않습니다. 이 경우 `route_filter_note`가 표시됩니다. 편명 없이 구간을 조회하면 상대 공항 코드로 검색합니다.
 
 현재 항공편의 실제 ADS-B `callsign`, `icao24` 또는 `registration`을 확인했다면 해당 값을 편명 조회에 함께 넣을 수 있습니다. 편명 조회 기능이 없는 위치 공급자에는 확인된 기체 식별자로 별도 위치 요청을 보냅니다. 응답의 `result_kind: "aircraft_position"`은 기체 관측값을 뜻합니다. 편명과 다른 식별자 사이의 관계는 요청에서 확인된 값을 사용합니다.
+
+날짜나 시간 조건을 주면 편명 조회에서 현재 ADS-B 관측을 별도로 추가하지 않습니다. 현재 좌표가 필요하면 `live`를 사용합니다. FR24·AirNav·AirLabs는 `live`에서도 편명으로 조회합니다. adsb.lol과 AvioADSB는 콜사인, 등록번호 또는 ICAO24를 받습니다. FR24 위치 조회의 기체 필터는 IATA 편명, 콜사인 또는 등록번호입니다. FR24 운항 요약의 `hex`는 응답 필드입니다. [adsb.lol OpenAPI](https://api.adsb.lol/api/openapi.json) · [AvioADSB API](https://avioadsb.org/docs/api#endpoints) · [FR24 위치 필터](https://github.com/Flightradar24/fr24api-mcp#live-flight-data) · [AirNav OpenAPI](https://www.airnavradar.com/api/openapi) · [AirLabs 위치 조회](https://airlabs.co/docs/flights) · [FR24 운항 요약](https://fr24api.flightradar24.com/docs/endpoints/flight-summary)
 
 공항 코드를 넣은 요청은 가능한 항공편 데이터와 공항 자체 정보를 함께 반환합니다. 공항 정보는 `result_kind: "airport_info"`와 `airport_code`로 표시합니다. 기본 공항 정보는 공개 FreeAirportDB에서 가져옵니다. 공급자를 직접 지정할 때는 `freeairportdb`를 목록에 넣어 공개 공항 정보를 받거나 `flightradar24`를 넣어 FR24 Airports Light를 함께 조회할 수 있습니다. 공급자 제외와 응답 형식 조건은 공항 정보에도 적용됩니다. [FreeAirportDB API](https://freeairportdb.com/api) · [OurAirports](https://ourairports.com/)
 
@@ -232,7 +234,7 @@ FR24 결과만 필요하면 Dots에 “FR24에서만 KE703 상태 알려줘”�
 - 데이터 응답에서 플러그인이 지원하는 한도·재시도 헤더를 `quota_headers`에 담습니다. 헤더 이름은 소문자로, 값은 문자열로 전달하고 반사된 인증값은 가립니다. 대상 헤더를 받은 경우 Dots 결과와 NDJSON의 공급자별 응답에서 이 필드를 볼 수 있습니다.
 - UTF-8 본문은 공백과 형식을 유지합니다. 그 외 본문은 보통 base64로 반환합니다. 본문에 반사된 인증값을 마스킹한 경우 `credential_redacted`를 표시하며, UTF-8로 해석할 수 없어 마스킹 후 텍스트를 반환했다면 `raw_body_encoding`은 `decoded_and_credential_redacted`입니다. 플러그인은 본문과 조회 조건을 저장하거나 캐시하지 않습니다.
 - `recommended_next_at`은 공급자별 권장 시각, `recommended_next_lookup_at`은 그중 가장 이른 시각입니다. 호환 필드인 `next_allowed_at`, `next_lookup_at`과 함께 값이 있으면 `2026-11-25T03:00:00.000+0000` 형식으로 표시됩니다. 계산할 시각이 없으면 `null`을 반환합니다.
-- 권장 시각 전에도 요청은 공급자에게 전달됩니다. 데이터 API가 `429` 등으로 응답하면 해당 HTTP 상태와 읽을 수 있는 응답 본문을 반환합니다.
+- 권장 시각은 정기 조회와 동일 조건 재시도에 참고합니다. 같은 항공편의 상태, 위치, 궤적처럼 각각 필요한 정보를 묻는 후속 요청은 이어서 실행할 수 있습니다. 데이터 API가 `429` 등으로 응답하면 해당 HTTP 상태와 읽을 수 있는 응답 본문을 반환합니다.
 - Dots는 읽어 온 공급자별 원문을 최종 MCP 결과에 함께 받습니다. SSE와 진행 토큰을 지원하는 MCP 클라이언트에는 공급자별 완료 알림을 보냅니다.
 - Dots는 읽어 온 원문을 최종 도구 결과에서 받습니다. 비공개 Site의 조회 화면은 공급자별 원문을 도착 즉시 표시합니다. Site에 로그인한 상태에서 `POST /lookup/stream`에 `Content-Type: application/json`과 `aviation_lookup` 인자를 보내면 NDJSON을 받을 수 있습니다. `Origin`을 보내면 Site와 같아야 합니다. `provider`에는 공급자 결과와 읽어 온 원문, `complete`에는 전체 상태, `error`에는 조회 오류가 담깁니다.
 - OpenSky OAuth에 실패하면 `authorization_diagnostic`과 `authorization_elapsed_ms`로 실패 유형과 경과 시간을 확인할 수 있습니다. 토큰 서버 연결에서 받은 HTTP 522는 `oauth_origin_connection_timeout`으로 표시됩니다. Cloudflare가 진단 헤더를 보내면 `authorization_response_headers`에 담습니다. [Cloudflare HTTP 522](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-522/)

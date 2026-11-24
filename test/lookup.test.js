@@ -40,6 +40,7 @@ test("raw bodies and advisory pacing through MCP tools/call", async (t) => {
     assert.ok([...Object.keys(structuredContent), ...Object.keys(result)].every((field) => !field.endsWith("_kst")));
     assert.ok(structuredContent.agent_instruction.includes(result.recommended_next_at));
     assert.match(structuredContent.agent_instruction, /earlier request is allowed/);
+    assert.match(structuredContent.agent_instruction, /For the same flight, follow up with a different operation or verified filters/);
   }
   const immediate = await call("aviation_lookup", live, { AVIATION_RATE_LIMITS: "malformed" });
   assert.equal(immediate.structuredContent.providers[0].status, "ok");
@@ -447,6 +448,38 @@ test("a known aircraft identifier adds live positions to a current flight lookup
   const historical = await call("aviation_lookup", { ...query, date: "2025-01-20" });
   assert.equal(historical.structuredContent.providers[0].upstream_attempted, false);
   assert.equal(requests.length, 1);
+});
+
+test("ADS-B sources keep their skip reasons visible and use exact identities for live positions", async (t) => {
+  const hosts = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    hosts.push({ host: url.hostname, path: url.pathname, query: url.search });
+    return Response.json({ sample: true });
+  });
+  const env = { ADSB_LOL_API_KEY: "fixture-key" };
+  const flight = { operation: "flight", identType: "flight_number", ident: "FX5926" };
+  for (const fields of [{}, { date: "2026-11-25", icao24: "A05F59" }]) {
+    const { structuredContent } = await call("aviation_lookup", { ...flight, ...fields }, env);
+    for (const id of ["adsb_lol", "avioadsb"]) {
+      const row = structuredContent.providers.find(({ provider }) => provider === id);
+      assert.equal(row.status, "unsupported_operation");
+      assert.equal(row.upstream_attempted, false);
+      assert.match(row.detail, fields.date ? /date or time/ : /verified aircraft identifier/);
+    }
+  }
+  assert.equal(hosts.length, 0);
+
+  const adsb = ["adsb_lol", "avioadsb"];
+  const { structuredContent } = await call("aviation_lookup", { ...flight, icao24: "A05F59", providers: adsb }, env);
+  assert.ok(structuredContent.providers.every(({ result_kind, status }) => result_kind === "aircraft_position" && status === "ok"));
+  assert.deepEqual(hosts.map(({ path }) => path).sort(), ["/v1/hex/a05f59", "/v2/hex/a05f59"]);
+
+  hosts.length = 0;
+  const providers = [...adsb, "flightradar24"];
+  const live = { operation: "live", providers, identType: "registration", ident: "N123FE" };
+  await call("aviation_lookup", live, { ...env, FLIGHTRADAR24_API_KEY: "fixture-fr24-key" });
+  assert.deepEqual(hosts.map(({ path }) => path).sort(), ["/api/live/flight-positions/light", "/v1/reg/N123FE", "/v2/reg/N123FE"]);
+  assert.equal(hosts.find(({ host }) => host === "fr24api.flightradar24.com").query, "?registrations=N123FE&limit=1");
 });
 
 test("KAC schedules can filter by an exact flight without airport or direction", async (t) => {
