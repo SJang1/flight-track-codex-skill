@@ -11,7 +11,6 @@ const route = { operation: 'airport', direction: 'departure', airport: 'ICN', op
 test('Flightradar24 sends its documented Bearer, version and live filters', () => {
   assert.equal(operations.flight(liveFlight, {}), null);
   assert.deepEqual(flightradar24Provider.keys, ['FLIGHTRADAR24_API_KEY']);
-  assert.equal(flightradar24Provider.exclusive, true);
   const flight = operations.flight(liveFlight, env);
   assert.equal(flight.url.origin, 'https://fr24api.flightradar24.com');
   assert.equal(flight.url.pathname, '/api/live/flight-positions/full');
@@ -172,6 +171,7 @@ test('Flightradar24 explicit requests enforce credentials and reject cross-provi
 
   const invalid = [
     { ...usage, providers: ['adsb_fi'] },
+    { ...usage, providers: ['flightradar24', 'adsb_fi'] },
     { ...usage, ident: 'KE703' },
     { ...usage, fr24Params: { period: 'invalid' } },
     { ...usage, fr24Params: { period: '7d', limit: 4 } },
@@ -200,6 +200,7 @@ test('Flightradar24 validates the configured plan allowance, result cap, and his
   const advanced = { ...env, FLIGHTRADAR24_PLAN: 'advanced' };
   const catalog = await callTool('aviation_providers', {}, explorer);
   const fr24 = catalog.structuredContent.providers.find(({ id }) => id === 'flightradar24');
+  assert.equal(fr24.exclusive, false);
   assert.equal(fr24.fr24_plan, 'explorer');
   assert.equal(fr24.fr24_endpoints.length, 17);
   const planAvailability = new Map(fr24.fr24_endpoints.map(({ id, available_on_plan }) => [id, available_on_plan]));

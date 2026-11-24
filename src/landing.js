@@ -75,7 +75,7 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
           <option value="airport">공항 출도착</option>
           <option value="route">운항 구간</option>
           <option value="schedule">운항 일정</option>
-          <option value="fr24">Flightradar24 엔드포인트</option>
+          <option value="fr24">FR24 전용 엔드포인트</option>
         </select>
         <div id="fields" class="field-grid"></div>
         <div id="fr24" hidden>
@@ -105,7 +105,7 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
               <input id="exclude-providers" name="excludeProviders" list="provider-options" placeholder="예: opensky" autocomplete="off" spellcheck="false" aria-describedby="provider-help">
             </div>
           </div>
-          <small id="provider-help">ID를 쉼표로 구분합니다. 양쪽에 있는 공급자는 제외됩니다.</small>
+          <small id="provider-help">선택 칸을 비우면 FR24를 포함해 조회 조건과 키가 맞는 공급자를 조회합니다. ID는 쉼표로 구분하며, 양쪽에 있는 공급자는 제외됩니다.</small>
           <datalist id="provider-options"></datalist>
         </fieldset>
         <div class="actions"><button id="submit" type="submit">요청 보내기</button><button id="cancel" type="button" disabled>중단</button></div>

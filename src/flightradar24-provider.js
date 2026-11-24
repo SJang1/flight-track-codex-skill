@@ -119,9 +119,9 @@ export const flightradar24Provider = {
   id: 'flightradar24',
   label: 'Flightradar24 API',
   docs: 'https://fr24api.flightradar24.com/docs/endpoints/overview',
-  note: 'For ordinary flight, live, airport, history, or track lookups, use that operation with providers set to flightradar24 alone. Use operation fr24 when the user requests a specific FR24 endpoint or a feature such as airport details, counts, or usage. FLIGHTRADAR24_PLAN controls coverage and request rate; FLIGHTRADAR24_MONTHLY_CREDITS optionally adds an advisory budget.',
+  note: 'Participates in eligible flight, live, airport, history, and track lookups when a key is configured. Select this provider explicitly for a narrower lookup. Use operation fr24 for a specific endpoint such as airport details, counts, or usage. FLIGHTRADAR24_PLAN controls coverage and request rate. FLIGHTRADAR24_MONTHLY_CREDITS optionally adds an advisory budget.',
   keys: ['FLIGHTRADAR24_API_KEY'],
-  exclusive: true,
+  airportInfoRequiresSelection: true,
   airportInfo(input, env) {
     return get('airports_light', { code: input.airport }, env);
   },

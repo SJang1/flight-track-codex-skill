@@ -240,35 +240,44 @@ test("raw bodies and advisory pacing through MCP tools/call", async (t) => {
   assert.equal(routePulls, 1);
 });
 
-test("Flightradar24 is available by explicit selection with a configured key", async (t) => {
+test("Flightradar24 joins eligible lookups and can be selected or excluded", async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
   const base = { operation: "flight", identType: "flight_number", ident: "KE703" };
-  const lookup = { ...base, providers: ["flightradar24"] };
-  const env = { FLIGHTRADAR24_API_KEY: "mock-flightradar24-key" };
+  const env = { FLIGHTRADAR24_API_KEY: "mock-flightradar24-key", AIRLABS_API_KEY: "mock-airlabs-key" };
   const raw = '{ "data": [] }\n';
-  let fetchCount = 0;
+  const requests = [];
   globalThis.fetch = async (url, options) => {
-    fetchCount++;
-    assert.equal(url.hostname, "fr24api.flightradar24.com");
-    assert.equal(options.headers.Authorization, `Bearer ${env.FLIGHTRADAR24_API_KEY}`);
+    requests.push({ url, options });
     return new Response(raw);
   };
-  const withoutKey = await call("aviation_lookup", lookup);
-  assert.equal(withoutKey.structuredContent.providers[0].status, "missing_credentials");
-  const defaultProviders = await call("aviation_lookup", base, env);
-  const skippedFr24 = defaultProviders.structuredContent.providers.find(({ provider }) => provider === "flightradar24");
-  assert.equal(skippedFr24.status, "select_individually");
-  assert.equal(skippedFr24.upstream_attempted, false);
-  assert.equal(skippedFr24.data_request_attempted, false);
-  const mixed = await call("aviation_lookup", { ...base, providers: ["flightradar24", "airlabs"] }, env);
-  assert.equal(mixed.isError, true);
-  assert.equal(fetchCount, 0);
-  const keyed = await call("aviation_lookup", lookup, env);
-  const source = keyed.structuredContent.providers[0];
-  assert.equal(source.status, "ok");
-  assert.equal(keyed.content[source.raw_body_content_index].text, raw);
-  assert.equal(fetchCount, 1);
+  const withoutKey = await call("aviation_lookup", base, { AIRLABS_API_KEY: env.AIRLABS_API_KEY });
+  const missing = withoutKey.structuredContent.providers.find(({ provider }) => provider === "flightradar24");
+  assert.equal(missing.status, "missing_credentials");
+  assert.equal(missing.upstream_attempted, false);
+  assert.equal(missing.data_request_attempted, false);
+  assert.deepEqual(requests.map(({ url }) => url.hostname), ["airlabs.co"]);
+
+  for (const selection of [{}, { providers: ["flightradar24", "airlabs"] }, { providers: ["flightradar24"] }]) {
+    requests.length = 0;
+    const result = await call("aviation_lookup", { ...base, ...selection }, env);
+    const source = result.structuredContent.providers.find(({ provider }) => provider === "flightradar24");
+    assert.equal(source.status, "ok");
+    assert.equal(source.upstream_attempted, true);
+    assert.equal(source.data_request_attempted, true);
+    assert.equal(result.content[source.raw_body_content_index].text, raw);
+    const hostnames = selection.providers?.length === 1
+      ? ["fr24api.flightradar24.com"]
+      : ["airlabs.co", "fr24api.flightradar24.com"];
+    assert.deepEqual(requests.map(({ url }) => url.hostname).sort(), hostnames);
+    const fr24Request = requests.find(({ url }) => url.hostname === "fr24api.flightradar24.com");
+    assert.equal(fr24Request.options.headers.Authorization, `Bearer ${env.FLIGHTRADAR24_API_KEY}`);
+  }
+
+  requests.length = 0;
+  const excluded = await call("aviation_lookup", { ...base, excludeProviders: ["flightradar24"] }, env);
+  assert.ok(excluded.structuredContent.providers.every(({ provider }) => provider !== "flightradar24"));
+  assert.deepEqual(requests.map(({ url }) => url.hostname), ["airlabs.co"]);
 });
 
 test("airport context returns reference data with flight results and respects provider selection", async (t) => {
@@ -289,6 +298,15 @@ test("airport context returns reference data with flight results and respects pr
   assert.ok(airportRows.every((source) => result.content[source.raw_body_content_index].text === raw));
   assert.equal(requests.find((url) => url.hostname === "apis.data.go.kr").searchParams.get("airport_code"), "NRT");
   assert.equal(result.structuredContent.recommended_next_lookup_at, rows.find(({ provider }) => provider === "incheon_passenger_detail").recommended_next_at);
+
+  requests.length = 0;
+  const defaults = await call("aviation_lookup", flight, env);
+  const defaultAirports = defaults.structuredContent.providers.filter(({ result_kind }) => result_kind === "airport_info");
+  assert.deepEqual(defaultAirports.map(({ airport_code }) => airport_code).sort(), ["ICN", "NRT"]);
+  assert.ok(defaultAirports.every(({ provider }) => provider === "freeairportdb"));
+  assert.deepEqual(requests.filter((url) => url.hostname === "fr24api.flightradar24.com").map((url) => url.pathname), [
+    "/api/live/flight-positions/full",
+  ]);
 
   requests.length = 0;
   const onlyFr24 = await call("aviation_lookup", { ...flight, providers: ["flightradar24"] }, env);

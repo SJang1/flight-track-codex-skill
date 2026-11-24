@@ -42,7 +42,7 @@ OpenSky의 `credentials.json`에서 `clientId` 값은 `OPENSKY_CLIENT_ID`, `clie
 
 ## 조회 방법
 
-Dots에서는 질문당 `aviation_lookup`을 한 번 호출합니다. `providers`를 생략하면 일반 조회 대상 중 요청 조건과 키 설정이 맞는 공급자에 병렬로 요청하고 완료 순서대로 결과를 모읍니다. FlightAware와 Flightradar24는 각각 명시적으로 단독 선택합니다. 최종 종합과 판단은 Dots 에이전트가 담당합니다.
+Dots에서는 질문당 `aviation_lookup`을 한 번 호출합니다. `providers`를 생략하면 FR24를 포함해 요청 조건과 키 설정이 맞는 일반 조회 공급자에 병렬로 요청하고 완료 순서대로 결과를 모읍니다. FlightAware는 명시적으로 단독 선택합니다. 최종 종합과 판단은 Dots 에이전트가 담당합니다.
 
 | 도구 | 용도 |
 | --- | --- |
@@ -79,7 +79,7 @@ Dots에서는 질문당 `aviation_lookup`을 한 번 호출합니다. `providers
 
 현재 항공편의 실제 ADS-B `callsign`, `icao24` 또는 `registration`을 확인했다면 해당 값을 편명 조회에 함께 넣을 수 있습니다. 편명 조회 기능이 없는 위치 공급자에는 확인된 기체 식별자로 별도 위치 요청을 보냅니다. 응답의 `result_kind: "aircraft_position"`은 기체 관측값을 뜻합니다. 편명과 다른 식별자 사이의 관계는 요청에서 확인된 값을 사용합니다.
 
-공항 코드를 넣은 요청은 가능한 항공편 데이터와 공항 자체 정보를 함께 반환합니다. 공항 정보는 `result_kind: "airport_info"`와 `airport_code`로 표시합니다. 기본 조회는 공개 FreeAirportDB를 사용하며, Flightradar24를 단독 선택하면 같은 공급자의 Airports Light를 사용합니다. 다른 공급자를 직접 지정할 때 공개 공항 정보도 필요하면 `freeairportdb`를 선택 목록에 추가합니다. 공급자 제외와 응답 형식 조건은 공항 정보에도 적용됩니다. [FreeAirportDB API](https://freeairportdb.com/api) · [OurAirports](https://ourairports.com/)
+공항 코드를 넣은 요청은 가능한 항공편 데이터와 공항 자체 정보를 함께 반환합니다. 공항 정보는 `result_kind: "airport_info"`와 `airport_code`로 표시합니다. 기본 공항 정보는 공개 FreeAirportDB에서 가져옵니다. 공급자를 직접 지정할 때는 `freeairportdb`를 목록에 넣어 공개 공항 정보를 받거나 `flightradar24`를 넣어 FR24 Airports Light를 함께 조회할 수 있습니다. 공급자 제외와 응답 형식 조건은 공항 정보에도 적용됩니다. [FreeAirportDB API](https://freeairportdb.com/api) · [OurAirports](https://ourairports.com/)
 
 ### 구간 조회
 
@@ -120,7 +120,11 @@ FlightAware AeroAPI는 `providers: ["flightaware"]`로 조회합니다. 호출�
 
 ### Flightradar24 조회
 
-항공편 상태(`flight`), 실시간 위치(`live`), 공항·구간(`airport`), 과거 운항(`history`), 궤적(`track`)은 다른 공급자와 같은 조회 유형을 사용합니다. 웹 화면에서는 해당 유형을 고른 뒤 **이 공급자만 조회**에 `flightradar24`를 넣습니다. Dots에서 “FR24로 KE703 상태 알려줘”라고 요청해도 같은 `flight` 조회를 사용합니다. 날짜 없는 `flight` 조회는 현재 추적 중인 위치를 요청하며, 날짜 범위를 지정하면 운항 요약을 요청합니다.
+항공편 상태(`flight`), 실시간 위치(`live`), 공항·구간(`airport`), 과거 운항(`history`), 궤적(`track`)은 입력 조건과 키가 맞으면 기본 조회에 FR24 결과도 포함합니다. 날짜 없는 `flight` 조회는 현재 추적 중인 위치를 요청하며, 날짜 범위를 지정하면 운항 요약을 요청합니다.
+
+병렬 조회는 FR24 원문을 출처가 표시된 별도 응답으로 돌려줍니다. 다른 공급자의 실시간·준실시간 기록에 빈 항목이 있으면 그대로 표시합니다. [FR24 이용약관 §6.3](https://www.flightradar24.com/terms-of-service)
+
+FR24 결과만 필요하면 Dots에 “FR24에서만 KE703 상태 알려줘”라고 요청하거나 같은 조회에 `providers: ["flightradar24"]`를 넣습니다. 웹에서는 해당 조회 유형의 **이 공급자만 조회**에 `flightradar24`를 입력합니다. 이 선택 칸에 여러 공급자를 넣거나 `excludeProviders`로 FR24를 제외할 수도 있습니다.
 
 공항 자체 정보, 건수 집계, 계정 사용량 등 특정 FR24 엔드포인트가 필요할 때 `operation: "fr24"`에 `fr24Endpoint`와 `fr24Params`를 넣습니다. 지정한 엔드포인트의 원본 응답을 반환합니다. [FR24 엔드포인트 문서](https://fr24api.flightradar24.com/docs/endpoints/overview)
 
@@ -145,7 +149,7 @@ FlightAware AeroAPI는 `providers: ["flightaware"]`로 조회합니다. 호출�
 
 `aviation_providers`의 `fr24_endpoints`에서 경로별 파라미터와 플랜별 이용 가능 여부를 확인할 수 있습니다. 목록형 필터는 `flight_ids: "3a55c027,38a384da"`처럼 쉼표로 구분합니다. 과거 위치의 `timestamp`는 Unix 초입니다. 운항 요약의 일시 범위는 UTC 기준 최대 14일이며, 항공편이 처음 관측된 시각으로 조회합니다. [FR24 운항 요약](https://fr24api.flightradar24.com/docs/endpoints/flight-summary)
 
-웹 조회 화면에서는 **FR24 API**를 고른 뒤 엔드포인트에 표시되는 파라미터만 입력하면 됩니다. 실행 후 공급자별 원본 본문과 HTTP 상태, 재조회 권장 시각을 확인할 수 있습니다.
+웹 조회 화면에서는 **FR24 전용 엔드포인트**를 고른 뒤 해당 경로에 표시되는 파라미터를 입력합니다. 실행 후 원본 본문과 HTTP 상태, 재조회 권장 시각을 확인할 수 있습니다.
 
 `FLIGHTRADAR24_PLAN`을 일반 변수로 설정하면 구독표에 공개된 이용 범위와 분당 요청 한도를 적용합니다.
 
@@ -161,7 +165,7 @@ FlightAware AeroAPI는 `providers: ["flightaware"]`로 조회합니다. 호출�
 
 - Dots는 자연어 요청을 `aviation_lookup`의 JSON 인자 객체로 변환해서 호출합니다. 확보한 원문으로 답할 수 있으면 답변하고, 판단에 영향이 있는 미확인 정보는 함께 밝히도록 안내합니다. 건너뛴 공급자에는 대기 중인 응답이 없습니다.
 - 첫 MCP 텍스트 블록은 공급자별 상태와 권장 재조회 시각을 담습니다. 데이터 요청의 HTTP 응답을 받으면 상태 코드와 `Content-Type`도 포함됩니다. 읽어 온 데이터 본문은 `raw_body_content_index`가 가리키는 별도 블록에 있습니다. 인덱스는 0부터 시작합니다. OAuth 실패에서는 진단 메타데이터를 반환합니다.
-- `providers`에는 조회를 건너뛴 공급자의 상태도 표시됩니다. `upstream_attempted: false`이면 인증과 데이터 요청을 모두 생략했습니다. `missing_credentials`는 필수 키가 비어 있음을, `select_individually`는 단독 선택이 필요함을 뜻합니다. `upstream_attempted: true`와 `data_request_attempted: false`는 OAuth 인증만 시도했음을 뜻합니다. 웹에서는 생략한 공급자를 별도로 표시합니다.
+- `providers`에는 조회를 건너뛴 공급자의 상태도 표시됩니다. `upstream_attempted: false`이면 인증과 데이터 요청을 모두 생략했습니다. `missing_credentials`는 필수 키가 비어 있음을, `select_individually`는 FlightAware를 따로 선택해야 함을 뜻합니다. `upstream_attempted: true`와 `data_request_attempted: false`는 OAuth 인증만 시도했음을 뜻합니다. 웹에서는 생략한 공급자를 별도로 표시합니다.
 - 데이터 응답에서 플러그인이 지원하는 한도·재시도 헤더를 `quota_headers`에 담습니다. 헤더 이름은 소문자로, 값은 문자열로 전달하고 반사된 인증값은 가립니다. 대상 헤더를 받은 경우 Dots 결과와 NDJSON의 공급자별 응답에서 이 필드를 볼 수 있습니다.
 - UTF-8 본문은 공백과 형식을 유지합니다. 그 외 본문은 보통 base64로 반환합니다. 본문에 반사된 인증값을 마스킹한 경우 `credential_redacted`를 표시하며, UTF-8로 해석할 수 없어 마스킹 후 텍스트를 반환했다면 `raw_body_encoding`은 `decoded_and_credential_redacted`입니다. 플러그인은 본문과 조회 조건을 저장하거나 캐시하지 않습니다.
 - `recommended_next_at`은 공급자별 권장 시각, `recommended_next_lookup_at`은 그중 가장 이른 시각입니다. 호환 필드인 `next_allowed_at`, `next_lookup_at`과 함께 값이 있으면 `2026-11-25T03:00:00.000+0000` 형식으로 표시됩니다. 계산할 시각이 없으면 `null`을 반환합니다.
