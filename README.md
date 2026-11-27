@@ -15,7 +15,7 @@ Dots에서 항공편 상태, 실시간 ADS-B, 과거 궤적, 공항 운항 정�
 | Flightradar24 API | `FLIGHTRADAR24_API_KEY` |
 | AeroDataBox Direct | `AERODATABOX_API_KEY` |
 | adsb.lol | `ADSB_LOL_API_KEY` |
-| OpenSky Network | `OPENSKY_CLIENT_ID`와 `OPENSKY_CLIENT_SECRET` 두 값 모두 |
+| OpenSky Network 인증 조회 | `OPENSKY_CLIENT_ID`와 `OPENSKY_CLIENT_SECRET` 두 값 모두 |
 | AirLabs | `AIRLABS_API_KEY` |
 | Aviationstack | `AVIATIONSTACK_API_KEY` |
 
@@ -36,11 +36,21 @@ OpenSky의 `credentials.json`에서 `clientId` 값은 `OPENSKY_CLIENT_ID`, `clie
 | [한국공항공사_실시간 항공기 운항정보 검색_GW (15160195)](https://www.data.go.kr/data/15160195/openapi.do) | `KAC_FLIGHT_SEARCH_SERVICE_KEY` |
 | [한국공항공사_항공기 기종·등록번호 운항 정보 (15158519)](https://www.data.go.kr/data/15158519/openapi.do) | `KAC_AIRCRAFT_STATUS_SERVICE_KEY` |
 | [한국공항공사_항공기 운항 스케줄 정보_GW (15158949)](https://www.data.go.kr/data/15158949/openapi.do) | `KAC_SCHEDULE_SERVICE_KEY` |
+| [인천공항 T1 여객 운항 상세 (15160568)](https://www.data.go.kr/data/15160568/openapi.do) | `INCHEON_T1_PASSENGER_SERVICE_KEY` |
+| [인천공항 T2 여객 운항 상세 (15166252)](https://www.data.go.kr/data/15166252/openapi.do) | `INCHEON_T2_PASSENGER_SERVICE_KEY` |
+| [인천공항 T1 화물 운항 상세 (15168220)](https://www.data.go.kr/data/15168220/openapi.do) | `INCHEON_T1_CARGO_SERVICE_KEY` |
+| [인천공항 T2 화물 운항 상세 (15168252)](https://www.data.go.kr/data/15168252/openapi.do) | `INCHEON_T2_CARGO_SERVICE_KEY` |
+| [인천공항 Ferry 운항 상세 (15166250)](https://www.data.go.kr/data/15166250/openapi.do) | `INCHEON_FERRY_SERVICE_KEY` |
+| [인천공항 운항마감 (15098227)](https://www.data.go.kr/data/15098227/openapi.do) | `INCHEON_FLIGHT_CLOSING_SERVICE_KEY` |
+| [인천공항 입국장 도착 정보 (15095061)](https://www.data.go.kr/data/15095061/openapi.do) | `INCHEON_ARRIVAL_CONGESTION_SERVICE_KEY` |
+| [인천공항 취항 항공사 (15095073)](https://www.data.go.kr/data/15095073/openapi.do) | `INCHEON_AIRLINES_SERVICE_KEY` |
+| [한국공항공사 면세점 실시간 운항 (15163384)](https://www.data.go.kr/data/15163384/openapi.do) | `KAC_DUTYFREE_REALTIME_SERVICE_KEY` |
 
 ### 키 없이 호출할 수 있는 API
 
-- **adsb.fi, adsb.aero**는 공개 API를 사용합니다.
-- **AvioADSB**는 무키로도 호출합니다. 보유한 키가 있으면 `AVIOADSB_API_KEY`를 선택적으로 등록할 수 있습니다.
+- **adsb.fi, adsb.aero, FreeAirportDB**는 공개 API를 사용합니다. adsb.fi는 Cloudflare Workers에서 403을 반환할 수 있습니다.
+- **OpenSky**는 현재 상태벡터를 키 없이 조회할 수 있습니다. 시점을 지정한 상태벡터와 다른 조회에는 OAuth 설정을 사용합니다. [OpenSky REST](https://openskynetwork.github.io/opensky-api/rest.html#limitations)
+- **AvioADSB**는 공개 기능을 키 없이 호출합니다. `AVIOADSB_API_KEY`는 선택 변수이며 피더 전용 기체 목록에는 피더 키가 필요합니다. [AvioADSB 문서](https://avioadsb.org/docs/api)
 
 ## 조회 방법
 
@@ -50,6 +60,38 @@ Dots에서는 필요한 조회 유형마다 `aviation_lookup`을 호출합니다
 | --- | --- |
 | `aviation_providers` | 공급자별 기능, 인증 준비 상태, 조회 간격 확인 |
 | `aviation_lookup` | 조건에 맞는 공급자를 조회하고 공급자별 원본 본문과 다음 조회 권장 시각 반환 |
+| `aviation_native_endpoints` | 공급자의 공식 경로 목록, 특정 경로의 필드·본문 스키마 확인 |
+| `aviation_native_lookup` | 공급자 한 곳의 지정한 조회 경로 실행 |
+| `aviation_native_manage` | 명시적으로 요청한 알림 설정 등 관리 경로 실행 |
+| `aviation_aerodatabox_manage` | AeroDataBox 웹훅 생성·삭제와 알림 크레딧 충전 |
+
+### 공급자별 공식 명세 대조
+
+아래 작업 수는 웹 콘솔과 Dots에 연결된 HTTP 메서드·경로 조합입니다. 웹 콘솔에서 **공급자별 전체 엔드포인트**를 고른 다음 공급자와 엔드포인트를 선택합니다. Flightradar24와 AeroDataBox Direct도 같은 목록에 있습니다. Dots에서는 `aviation_native_endpoints`로 `provider`를 선택하고, `endpoint`를 추가해 필수·선택 인자와 형식을 확인할 수 있습니다. FR24와 AeroDataBox의 Dots 호출 형식은 각각 아래 조회 절을 참고하세요.
+
+| 제공처 | 연결한 작업 | 공식 명세와 범위 |
+| --- | ---: | --- |
+| Flightradar24 | 17 | 다운로드 명세 16개와 개요에 공개된 과거 이벤트 Count. [엔드포인트](https://fr24api.flightradar24.com/docs/endpoints/overview) · [OpenAPI](https://fr24api.flightradar24.com/documentation/Flightradar24-API.yaml) |
+| AeroDataBox Direct | 41 | Direct 1.15.4.0, 40개 경로. [OpenAPI](https://doc.aerodatabox.com/docs/openapi-direct-v1.json) |
+| FlightAware AeroAPI | 69 | 개발자 포털 OpenAPI 4.30.0의 64개 경로. 공항·항공사 결항, 과거 운항, 계정 사용량 포함. [포털 OpenAPI](https://static.flightaware.com/rsrc/aeroapi/aeroapi-openapi.yml) · [요금표](https://www.flightaware.com/commercial/aeroapi/) |
+| AirNav Radar | 26 | On-Demand 2.4.22. 항공편·기체·공항·공역·통계·청구. [OpenAPI](https://www.airnavradar.com/api/openapi) |
+| AirLabs | 20 | 참조·검색·현재 및 과거 운항·알림. [공식 문서](https://airlabs.co/docs/) · [과거 운항](https://airlabs.co/docs/historical) |
+| Aviationstack | 11 | 실시간·과거·당일 시간표·미래 스케줄·참조 목록. [OpenAPI](https://api.swaggerhub.com/apis/apilayer-863/AviationstackAPI/1.0.1/swagger.json) |
+| adsb.fi | 7 | 공개 GET. 피더 IP가 필요한 스냅샷과 폐기 예정 반경 경로는 별도 접속 조건을 따릅니다. [공식 문서](https://github.com/adsbfi/opendata#public-endpoints) |
+| adsb.lol | 20 | 문서의 유한 HTTP 요청. 실시간 WebSocket과 피더 IP 전용 readsb는 운영사에서 별도 연결을 제공합니다. [OpenAPI](https://api.adsb.lol/api/openapi.json) · [피더 API](https://www.adsb.lol/docs/feeders-only/re-api/) |
+| AvioADSB | 15 | 위치·기체 유형·스쿼크·ACARS/ADS-C·네트워크 정보. [공식 명세](https://avioadsb.org/docs/api#endpoints) |
+| adsb.aero | 9 | 이력 검색·궤적·공항·경유점·공역·커버리지·통계·상태. [공식 명세](https://adsb.aero/llms.txt) |
+| OpenSky Network | 7 | 상태벡터·수신기 상태·기간별/기체별/공항별 항공편·궤적. 현재 상태벡터에 익명 조회를 지원합니다. [REST](https://openskynetwork.github.io/opensky-api/rest.html) · [공식 SDK](https://github.com/openskynetwork/opensky-api/blob/master/python/opensky_api.py) |
+| FreeAirportDB | 3 | 코드·검색어·좌표로 공항을 조회합니다. [공식 문서](https://freeairportdb.com/api) |
+| 인천공항공사·한국공항공사 | 35 | 위 키 표의 18개 데이터셋. 같은 데이터셋의 공통 조회 별칭과 별개로, 전용 목록은 대표 공급자 ID에 표시됩니다. [공공데이터포털](https://www.data.go.kr/) |
+
+예를 들어 AirNav의 METAR는 `aviation_native_lookup`에서 다음 인자로 조회합니다.
+
+```json
+{"nativeProvider":"airnavradar","nativeEndpoint":"getMetar","nativeParams":{"icaoCode":"RKSI"}}
+```
+
+웹 API에서 같은 요청을 보낼 때는 `operation: "native"`를 추가합니다. 관리 작업만 `confirmNativeChange: true`가 필요합니다. AeroDataBox 관리는 자체 확인 필드를 사용합니다. 계정별 권한·요금은 실제 API 응답과 계약에 따릅니다.
 
 ### 공급자 선택
 
@@ -110,7 +152,7 @@ OpenSky의 최근 한 시점 위치가 필요하면 `live`에 ICAO24와 `start`�
 
 현재 항공편의 실제 ADS-B `callsign`, `icao24` 또는 `registration`을 확인했다면 해당 값을 편명 조회에 함께 넣을 수 있습니다. 편명 조회 기능이 없는 위치 공급자에는 확인된 기체 식별자로 별도 위치 요청을 보냅니다. 응답의 `result_kind: "aircraft_position"`은 기체 관측값을 뜻합니다. 편명과 다른 식별자 사이의 관계는 요청에서 확인된 값을 사용합니다.
 
-날짜나 시간 조건을 주면 편명 조회에서 현재 ADS-B 관측을 별도로 추가하지 않습니다. 현재 좌표가 필요하면 `live`를 사용합니다. FR24·AirNav·AirLabs는 `live`에서도 편명으로 조회합니다. adsb.lol과 AvioADSB는 콜사인, 등록번호 또는 ICAO24를 받습니다. FR24 위치 조회의 기체 필터는 IATA 편명, 콜사인 또는 등록번호입니다. FR24 운항 요약의 `hex`는 응답 필드입니다. [adsb.lol OpenAPI](https://api.adsb.lol/api/openapi.json) · [AvioADSB API](https://avioadsb.org/docs/api#endpoints) · [FR24 위치 필터](https://github.com/Flightradar24/fr24api-mcp#live-flight-data) · [AirNav OpenAPI](https://www.airnavradar.com/api/openapi) · [AirLabs 위치 조회](https://airlabs.co/docs/flights) · [FR24 운항 요약](https://fr24api.flightradar24.com/docs/endpoints/flight-summary)
+날짜나 시간 조건을 주면 편명 조회에서 현재 ADS-B 관측을 별도로 추가하지 않습니다. 현재 좌표가 필요하면 `live`를 사용합니다. FR24·AirNav·AirLabs·Aviationstack은 `live`에서도 편명으로 조회합니다. adsb.lol과 AvioADSB는 콜사인, 등록번호 또는 ICAO24를 받습니다. FR24 위치 조회의 기체 필터는 IATA 편명, 콜사인 또는 등록번호입니다. FR24 운항 요약의 `hex`는 응답 필드입니다. [adsb.lol OpenAPI](https://api.adsb.lol/api/openapi.json) · [AvioADSB API](https://avioadsb.org/docs/api#endpoints) · [FR24 위치 필터](https://github.com/Flightradar24/fr24api-mcp#live-flight-data) · [AirNav OpenAPI](https://www.airnavradar.com/api/openapi) · [AirLabs 위치 조회](https://airlabs.co/docs/flights) · [Aviationstack](https://docs.apilayer.com/aviationstack/docs/api-documentation) · [FR24 운항 요약](https://fr24api.flightradar24.com/docs/endpoints/flight-summary)
 
 공항 코드를 넣은 요청은 가능한 항공편 데이터와 공항 자체 정보를 함께 반환합니다. 공항 정보는 `result_kind: "airport_info"`와 `airport_code`로 표시합니다. 기본 공항 정보는 공개 FreeAirportDB에서 가져옵니다. 공급자를 직접 지정할 때는 `freeairportdb`를 목록에 넣어 공개 공항 정보를 받거나 `flightradar24`를 넣어 FR24 Airports Light를 함께 조회할 수 있습니다. 공급자 제외와 응답 형식 조건은 공항 정보에도 적용됩니다. [FreeAirportDB API](https://freeairportdb.com/api) · [OurAirports](https://ourairports.com/)
 
@@ -140,7 +182,7 @@ FR24나 AeroDataBox의 편명 조회에서 공항의 분 단위 조건을 생략
 {"operation":"airport","airport":"ICN","direction":"departure","oppositeAirport":"NRT"}
 ```
 
-`departure`에서는 `airport`가 출발지, `oppositeAirport`가 도착지입니다. `arrival`에서는 두 필드의 역할이 반대입니다. 두 공항 조건을 모두 지원하는 공급자만 호출합니다. 인천공항의 상대 공항과 Aviationstack 공항에는 IATA 코드를 입력합니다. AirNav Radar의 구간 조회에는 ICAO 코드(`RKSI`, `RJAA`)와 `date` 또는 `start`·`end`가 필요합니다.
+`departure`에서는 `airport`가 출발지, `oppositeAirport`가 도착지입니다. `arrival`에서는 두 필드의 역할이 반대입니다. 두 공항 조건을 모두 지원하는 공급자만 호출합니다. 인천공항의 상대 공항 및 Aviationstack 공항 시간표와 미래 스케줄에는 IATA 코드를 입력합니다. Aviationstack 항공편 조회에는 IATA 또는 ICAO를 사용할 수 있습니다. AirNav Radar의 구간 조회에는 ICAO 코드(`RKSI`, `RJAA`)와 `date` 또는 `start`·`end`가 필요합니다.
 
 ### 공항 코드 조회
 
@@ -175,7 +217,7 @@ FR24나 AeroDataBox의 편명 조회에서 공항의 분 단위 조건을 생략
 | `kac_aircraft_status` | 편명 또는 등록번호의 기종·등록번호 배정 정보. 별도 데이터셋의 `KAC_AIRCRAFT_STATUS_SERVICE_KEY`가 필요합니다. [명세](https://www.data.go.kr/data/15158519/openapi.do) |
 | `incheon_passenger_timetable` | ICN 출도착 방향과 상대 공항으로 찾는 계절 정기운항표. 원문의 요일과 유효일로 일정을 확인합니다. 별도 데이터셋의 `INCHEON_PASSENGER_TIMETABLE_SERVICE_KEY`가 필요합니다. [명세](https://www.data.go.kr/data/15095059/openapi.do) |
 
-AirLabs의 과거 운항은 `api/v10/historical` 베타에서 편명과 선택적인 숫자 오프셋을 받습니다. Aviationstack Basic 이상은 날짜를 지정한 과거 운항과 IATA 공항·출도착 방향·날짜로 조회하는 미래 운항을 제공합니다. Aviationstack의 참조 카탈로그는 자동완성 결과를 제공하므로 정확한 코드가 필요한 공통 참조 조회는 해당 코드를 받는 공급자를 사용합니다. [AirLabs 과거 운항](https://airlabs.co/docs/historical) · [Aviationstack 직접 API](https://docs.apilayer.com/apilayer/docs/quickstart-guide-6) · [Aviationstack 미래 운항](https://blog.apilayer.com/flights-timetable-or-flightsfuture-which-aviationstack-endpoint-do-you-actually-need/)
+AirLabs의 과거 운항은 `api/v10/historical` 베타에서 편명과 선택적인 숫자 오프셋을 받습니다. Aviationstack은 당일 공항 시간표에 `/timetable`, 미래 시간표에 `/flightsFuture`, 현재 위치와 과거 편명 조회에 `/flights`를 사용합니다. 지원 범위는 플랜에 따라 다릅니다. 참조 목록과 자동완성은 전용 엔드포인트에서 조회합니다. [AirLabs 과거 운항](https://airlabs.co/docs/historical) · [Aviationstack OpenAPI](https://api.swaggerhub.com/apis/apilayer-863/AviationstackAPI/1.0.1/swagger.json)
 
 FlightAware AeroAPI는 `providers: ["flightaware"]`로 조회합니다. 호출은 결과 집합에 따라 과금될 수 있습니다. OpenSky REST API를 운영 서비스에서 사용하려면 OpenSky의 사전 서면 라이선스가 필요합니다. [OpenSky 이용약관](https://opensky-network.org/about/terms-of-use)
 
@@ -214,7 +256,7 @@ FR24 결과만 필요하면 Dots에 “FR24에서만 KE703 상태 알려줘”�
 
 `aviation_providers`의 `fr24_endpoints`에서 경로별 파라미터와 플랜별 이용 가능 여부를 확인할 수 있습니다. 목록형 필터는 `flight_ids: "3a55c027,38a384da"`처럼 쉼표로 구분합니다. 과거 위치의 `timestamp`는 Unix 초입니다. 운항 요약의 일시 범위는 UTC 기준 최대 14일이며, 항공편이 처음 관측된 시각으로 조회합니다. [FR24 운항 요약](https://fr24api.flightradar24.com/docs/endpoints/flight-summary)
 
-웹 조회 화면에서는 **FR24 전용 엔드포인트**를 고른 뒤 해당 경로에 표시되는 파라미터를 입력합니다. 실행 후 원본 본문과 HTTP 상태, 재조회 권장 시각을 확인할 수 있습니다.
+웹에서 **공급자별 전체 엔드포인트**의 공급자로 **Flightradar24**를 선택합니다. 선택한 경로에 표시된 파라미터를 입력하면 원본 본문과 HTTP 상태, 재조회 권장 시각을 확인할 수 있습니다.
 
 `FLIGHTRADAR24_PLAN`을 일반 변수로 설정하면 구독표에 공개된 이용 범위와 분당 요청 한도를 적용합니다.
 
@@ -225,6 +267,31 @@ FR24 결과만 필요하면 Dots에 “FR24에서만 KE703 상태 알려줘”�
 | `advanced` | 200 | 엔드포인트별 상한 | 엔드포인트별 제공 범위 |
 
 플러그인은 공항 Full과 모든 Count(실시간 위치, 과거 위치, 과거 이벤트, 운항 요약)를 Essential 이상에서 호출합니다. Explorer에서 요청하면 API 호출 전에 제한을 안내합니다. 과거 이벤트 Count는 공식 구독표에 권한이 공개되지 않아 실제 플랜 권한은 FR24 응답으로 확인합니다. `fr24_id`로 과거 항공편을 요청할 때도 날짜와 권한은 FR24가 확인합니다. 플랜 설정을 생략하면 권한 판단은 FR24에 맡기고 권장 간격에는 Explorer 기본 한도를 사용합니다. Advanced의 분당 한도는 구독 비교표의 200회를 적용합니다. 별도 크레딧 가이드에는 90회로 표시되어 있습니다. [FR24 구독 비교표](https://fr24api.flightradar24.com/subscriptions-and-credits) · [FR24 크레딧 가이드](https://fr24api.flightradar24.com/docs/credit-overview)
+
+### AeroDataBox Direct 조회
+
+공식 Direct OpenAPI 1.15.4.0의 **40개 경로·41개 작업**을 지원합니다. 웹에서 **공급자별 전체 엔드포인트**의 공급자로 **AeroDataBox Direct**를 선택하면 경로·메서드와 필수·선택 필드를 확인할 수 있습니다. Dots에서는 `aviation_providers`의 `aerodatabox_endpoints`에서 공식 `operationId`, 파라미터, 본문 스키마, 과금 등급을 확인합니다. 키는 `AERODATABOX_API_KEY`이며 Free Tier도 해당 키가 필요합니다. [콘솔·공식 문서](https://doc.aerodatabox.com/direct.html) · [OpenAPI JSON](https://doc.aerodatabox.com/docs/openapi-direct-v1.json) · [OpenAPI YAML](https://doc.aerodatabox.com/docs/openapi-direct-v1.yaml)
+
+일반 `flight`, `live`, `history`, `schedule`, `airport`, `aircraft`, `filed_route` 등은 조건이 맞으면 AeroDataBox를 함께 조회합니다. 특정 Direct GET 경로가 필요하면 `aviation_lookup`에 `operation: "aerodatabox"`, `aerodataBoxEndpoint`, `aerodataBoxParams`를 전달합니다. 선택적으로 `format: "xml"`을 지정합니다.
+
+```json
+{"operation":"aerodatabox","aerodataBoxEndpoint":"GetAirport","aerodataBoxParams":{"codeType":"Iata","code":"ICN","withRunways":true}}
+```
+
+| 분야 | 작업 수 | 기능 |
+| --- | ---: | --- |
+| 항공기 | 6 | 기체 상세·등록 이력, 전체 매칭, 항공사 보유 기체, 이미지, 등록번호 검색 |
+| 공항 | 5 | 공항 상세·활주로, 좌표·IP·검색어로 공항 찾기 |
+| 항공편 | 8 | 편명 상태·이력·운항일, 공항 출도착 게시판, 편명 검색 |
+| Flight Alert | 6 | 웹훅 생성·조회·목록·삭제, 알림 크레딧 잔액·충전 |
+| 피드 상태 | 3 | 서비스 상태, 공항별 피드 상태, 피드별 지원 공항 |
+| FAA LADD | 1 | 등록번호 또는 콜사인으로 LADD 상태 조회 |
+| 시각·거리 | 4 | 공항 현지 시각·태양시, 공항 간 거리·예상 비행 시간 |
+| 통계 | 8 | 공항 및 전 세계 지연, 일별 노선, 편명별 지연 |
+
+웹훅 생성(`SubscribeWebhook`), 삭제(`UnsubscribeWebhook`), 충전(`RefillBalance`)은 Dots의 `aviation_aerodatabox_manage`에서 명시적으로 실행합니다. 웹은 실행 확인을 요구합니다. 스크립트에서 웹 NDJSON을 호출할 때는 `operation: "aerodatabox"`와 `confirmAeroDataBoxChange: true`를 함께 전달합니다. POST 본문은 `aerodataBoxBody`에 넣고, `format`은 응답 형식에만 적용됩니다. 알림 발송 시 알림 크레딧을 사용하며 충전은 요청한 크레딧 수만큼 API 단위를 사용합니다. [Flight Alert 가이드](https://aerodatabox.com/flight-alert-api-2026/)
+
+Direct 표준 요금은 Free/Tier 1/2/3별 0/1/2/6단위입니다. `withFlightPlan`의 추가 비용·권한과 검색 범위는 플랜에 따라 달라집니다. `AERODATABOX_MONTHLY_UNITS`는 확인된 월간 단위 한도를 입력할 때만 권장 간격에 반영합니다. 실제 권한·차감·공급자 오류는 계정 및 API 응답을 따릅니다. [Direct 요금표](https://aerodatabox.com/pricing)
 
 ## 응답과 재조회
 
@@ -267,7 +334,7 @@ AirLabs와 공공데이터포털에서 받은 한도 오류 코드는 원본 본
 | `opensky` | `GET /api/states/all`, `/api/tracks/all`, `/api/flights/{aircraft,arrival,departure}` | OAuth |
 | `flightaware` | 항공편·위치·궤적·이력과 공항 운항편·직항 구간 `GET` | `x-apikey` 헤더 |
 | `flightradar24` | 공항·항공사·실시간 및 과거 위치·이벤트·운항 요약·궤적·사용량 `GET` 17종 | Bearer API 키와 `Accept-Version: v1` |
-| `aerodatabox` | `/flights/{number,callsign,reg,icao24}/…`, `/flights/airports/…` `GET` | `X-API-Key` 헤더 |
+| `aerodatabox` | 공식 Direct의 41개 작업. 일반 조회와 전용 엔드포인트 지원 | `X-API-Key` 헤더 |
 | `airnavradar` | `POST /v2/flights/live`, `POST /v2/flights/search`, `GET /v2/flights/schedules`, `/v2/aircraft`, `/v2/airports/{code}` | Bearer 토큰 |
 | `kac_schedule` | `GET /B551178/flight-schedule/{dom,int}` | `serviceKey` 쿼리 |
 | `kac_flight_status` | `GET /B551178/flight-search/info` | `serviceKey` 쿼리 |

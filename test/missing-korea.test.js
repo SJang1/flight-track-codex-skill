@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import worker from "../src/index.js";
+import { scheduleProviders } from "../src/schedule-providers.js";
 
 async function lookup(input, env) {
   const response = await worker.fetch(new Request("https://site.test/mcp", {
@@ -134,4 +135,78 @@ test("Incheon recurring timetables return bounded seasonal route records", async
   const dated = await lookup({ ...input, direction: "arrival", date: "2026-11-25" }, env);
   assert.equal(dated.structuredContent.providers[0].upstream_attempted, false);
   assert.equal(calls.length, 2);
+});
+
+test("Korean native routes retain the documented endpoint-specific fields and hide credentials", () => {
+  const providers = scheduleProviders.filter(({ native }) => native?.baseUrl.startsWith("https://apis.data.go.kr/"));
+  const paths = providers.flatMap(({ native }) => native.endpoints.map((endpoint) => native.baseUrl + endpoint.path));
+  assert.equal(providers.length, 18);
+  assert.equal(paths.length, 35);
+  assert.equal(new Set(paths).size, paths.length);
+  assert.ok(providers.every(({ native }) => native.endpoints.every(({ method }) => method === "GET")));
+  assert.ok(providers.every(({ native }) => native.endpoints.every(({ parameters }) => parameters.every(({ name }) => !["type", "serviceKey"].includes(name)))));
+
+  const { native: aircraft } = providers.find(({ id }) => id === "kac_aircraft_status");
+  assert.equal(aircraft.endpoints[0].parameters.find(({ name }) => name === "schStTime").schema.pattern, "^\\d{12}$");
+  assert.equal(aircraft.endpoints[0].parameters.find(({ name }) => name === "schAPM").schema.type, "string");
+  assert.deepEqual(aircraft.options({ format: "xml" }, { KAC_AIRCRAFT_STATUS_SERVICE_KEY: "fixture%2Bkey%3D" }), {
+    query: { serviceKey: "fixture+key=", type: "xml" },
+  });
+
+  const { native: ferry } = providers.find(({ id }) => id === "incheon_ferry");
+  const [arrival, departure] = ferry.endpoints;
+  assert.deepEqual(arrival.parameters.find(({ name }) => name === "searchDay").schema.enum, ["0", "1", "2"]);
+  assert.ok(arrival.parameters.some(({ name }) => name === "bagCarouselId"));
+  assert.ok(!departure.parameters.some(({ name }) => name === "bagCarouselId"));
+  assert.ok(departure.parameters.some(({ name }) => name === "lateral1Status"));
+  assert.ok(!arrival.parameters.some(({ name }) => name === "lateral1Status"));
+});
+
+test("Terminal-specific Incheon loads require their own keys and preserve exact-flight matching", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-11-25T02:00:00Z"));
+  const { raw, calls } = mockPortal(t);
+  const input = {
+    operation: "flight", providers: ["incheon_t2_cargo"], airport: "ICN", direction: "arrival",
+    ident: "FX5926", identType: "flight_number", oppositeAirport: "CAN", date: "2026-11-25",
+  };
+  const missing = await lookup(input, { INCHEON_ALL_FLIGHTS_SERVICE_KEY: "all-flights-fixture" });
+  assert.equal(missing.structuredContent.providers[0].status, "missing_credentials");
+  assert.equal(calls.length, 0);
+
+  const result = await lookup(input, { INCHEON_T2_CARGO_SERVICE_KEY: "t2-cargo-fixture" });
+  assert.equal(calls[0].pathname, "/B551177/statusOfCgoFltDeOdpT2/getCgoFltArrivalsDeOdpT2");
+  assert.deepEqual(Object.fromEntries(calls[0].searchParams), {
+    serviceKey: "t2-cargo-fixture", pageNo: "1", numOfRows: "10", type: "json", searchDate: "20261125", flightId: "FX5926",
+  });
+  const [source] = result.structuredContent.providers;
+  assert.match(source.route_filter_note, /opposite airport was omitted/);
+  assert.equal(result.content[source.raw_body_content_index].text, raw);
+});
+
+test("Incheon ferry accepts the next local day, and a seasonal board can omit the opposite airport", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-11-25T02:00:00Z"));
+  const { calls } = mockPortal(t);
+  const input = { operation: "airport", providers: ["incheon_ferry"], airport: "ICN", direction: "departure", oppositeAirport: "NRT" };
+  const env = { INCHEON_FERRY_SERVICE_KEY: "ferry-fixture", INCHEON_PASSENGER_TIMETABLE_SERVICE_KEY: "timetable-fixture" };
+  await lookup({ ...input, date: "2026-11-26" }, env);
+  assert.equal(calls[0].pathname, "/B551177/statusOfFerryFltOdp/getFerryFltDeparturesOdp");
+  assert.equal(calls[0].searchParams.get("searchDay"), "2");
+  assert.equal(calls[0].searchParams.get("airportCode"), "NRT");
+  const invalid = await lookup({ ...input, date: "2026-11-27" }, env);
+  assert.equal(invalid.structuredContent.providers[0].upstream_attempted, false);
+
+  await lookup({ operation: "schedule", providers: ["incheon_passenger_timetable"], airport: "ICN", direction: "arrival" }, env);
+  assert.equal(calls[1].pathname, "/B551177/PaxFltSched/getPaxFltSchedArrivals");
+  assert.equal(calls[1].searchParams.has("airport"), false);
+});
+
+test("KAC selected aircraft assignment requests can search by model", async (t) => {
+  const { calls } = mockPortal(t);
+  await lookup({ operation: "flight", providers: ["kac_aircraft_status"], ident: "B747", identType: "aircraft_type", market: "international" }, {
+    KAC_AIRCRAFT_STATUS_SERVICE_KEY: "aircraft-fixture",
+  });
+  assert.equal(calls[0].pathname, "/B551178/flight-aircraft-status/info");
+  assert.equal(calls[0].searchParams.get("schAPM"), "B747");
+  assert.equal(calls[0].searchParams.get("Line"), "I");
+  assert.equal(calls[0].searchParams.has("schFln"), false);
 });

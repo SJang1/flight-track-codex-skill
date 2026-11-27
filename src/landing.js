@@ -1,6 +1,6 @@
-export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {}) => {
+export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {}, aerodataBoxCatalog = {}, nativeProviders = []) => {
   const config = JSON.stringify({
-    providerIds, ...fr24Catalog, fr24ParamProperties,
+    providerIds, ...fr24Catalog, fr24ParamProperties, aerodatabox: aerodataBoxCatalog, nativeProviders,
   }).replaceAll('<', '\\u003c');
 
   return `<!doctype html>
@@ -30,8 +30,14 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
   .get { color: #145b4a; background: #dbf3eb; }
   .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .9rem; }
   .field-grid:not(:empty) { margin-top: .95rem; }
+  .endpoint-select { margin-top: .95rem; }
+  .field-help { display: block; margin-top: .25rem; }
+  .confirmation { display: flex; align-items: center; gap: .55rem; margin-top: .95rem; }
+  .confirmation input { width: 1rem; min-height: 1rem; flex: none; }
+  .confirmation label { margin: 0; }
   label { display: block; margin-bottom: .3rem; font-weight: 650; font-size: .93rem; }
-  input, select { width: 100%; min-height: 2.65rem; padding: .45rem .58rem; border: 1px solid #aebcca; border-radius: .4rem; background: #fff; color: inherit; font: inherit; }
+  input, select, textarea { width: 100%; min-height: 2.65rem; padding: .45rem .58rem; border: 1px solid #aebcca; border-radius: .4rem; background: #fff; color: inherit; font: inherit; }
+  textarea { resize: vertical; font-family: ui-monospace, monospace; }
   button, summary { cursor: pointer; }
   :focus-visible { outline: 3px solid #2675bb; outline-offset: 2px; }
   .actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.1rem; }
@@ -84,19 +90,35 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
           <option value="airport_runways">공항 활주로</option>
           <option value="airline_info">항공사 기본 정보</option>
           <option value="nearby">반경 내 기체</option>
-          <option value="fr24">FR24 전용 엔드포인트</option>
+          <option value="native">공급자별 전체 엔드포인트</option>
         </select>
         <div id="fields" class="field-grid"></div>
-        <div id="fr24" hidden>
-          <div class="field-grid">
-            <div>
-              <label for="fr24-endpoint">FR24 엔드포인트</label>
-              <select id="fr24-endpoint"></select>
-            </div>
+        <div id="native" hidden>
+          <div class="endpoint-select">
+            <label for="native-provider">공급자</label>
+            <select id="native-provider"></select>
           </div>
-          <div id="fr24-path" class="method" hidden><span class="get">GET</span><code id="fr24-path-value"></code></div>
-          <p id="fr24-note" class="muted"></p>
-          <div id="fr24-fields" class="field-grid"></div>
+          <div class="endpoint-select">
+            <label for="native-endpoint">엔드포인트</label>
+            <select id="native-endpoint"></select>
+          </div>
+          <div id="native-path" class="method" hidden><span id="native-method" class="get"></span><code id="native-path-value"></code></div>
+          <p class="muted"><span id="native-note"></span> <a id="native-docs" target="_blank" rel="noreferrer" hidden>공식 API 문서</a></p>
+          <div id="native-fields" class="field-grid"></div>
+          <div id="native-format" class="field-grid"></div>
+          <div id="aerodatabox-body-fields" class="field-grid"></div>
+          <div id="native-body-area" class="endpoint-select" hidden>
+            <label id="native-body-label" for="native-body">요청 본문 (JSON)</label>
+            <textarea id="native-body" rows="6" spellcheck="false" disabled></textarea>
+            <details>
+              <summary>본문 스키마</summary>
+              <pre id="native-body-schema"></pre>
+            </details>
+          </div>
+          <div id="native-confirmation" class="confirmation" hidden>
+            <input id="native-confirm" type="checkbox">
+            <label for="native-confirm">이 요청으로 계정을 변경하는 데 동의합니다.</label>
+          </div>
         </div>
         <details id="additional" hidden>
           <summary>추가 조건</summary>
@@ -141,12 +163,23 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
   const fields = document.querySelector('#fields');
   const additional = document.querySelector('#additional');
   const additionalFields = document.querySelector('#additional-fields');
-  const fr24 = document.querySelector('#fr24');
-  const fr24Endpoint = document.querySelector('#fr24-endpoint');
-  const fr24Fields = document.querySelector('#fr24-fields');
-  const fr24Path = document.querySelector('#fr24-path');
-  const fr24PathValue = document.querySelector('#fr24-path-value');
-  const fr24Note = document.querySelector('#fr24-note');
+  const aerodataBoxBodyFields = document.querySelector('#aerodatabox-body-fields');
+  const native = document.querySelector('#native');
+  const nativeProvider = document.querySelector('#native-provider');
+  const nativeEndpoint = document.querySelector('#native-endpoint');
+  const nativeFields = document.querySelector('#native-fields');
+  const nativeFormat = document.querySelector('#native-format');
+  const nativePath = document.querySelector('#native-path');
+  const nativePathValue = document.querySelector('#native-path-value');
+  const nativeMethod = document.querySelector('#native-method');
+  const nativeNote = document.querySelector('#native-note');
+  const nativeDocs = document.querySelector('#native-docs');
+  const nativeBodyArea = document.querySelector('#native-body-area');
+  const nativeBody = document.querySelector('#native-body');
+  const nativeBodyLabel = document.querySelector('#native-body-label');
+  const nativeBodySchema = document.querySelector('#native-body-schema');
+  const nativeConfirmation = document.querySelector('#native-confirmation');
+  const nativeConfirm = document.querySelector('#native-confirm');
   const providerFieldset = document.querySelector('#provider-fieldset');
   const providerFields = [document.querySelector('#providers'), document.querySelector('#exclude-providers')];
   const providerOptions = document.querySelector('#provider-options');
@@ -155,7 +188,6 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
   const status = document.querySelector('#status');
   const submit = document.querySelector('#submit');
   const cancel = document.querySelector('#cancel');
-  const endpoints = config.fr24_endpoints ?? [];
   let active;
   let received = 0;
   const skipReasons = {
@@ -225,7 +257,19 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
     flight_summary_full: '운항 요약 (Full)', flight_summary_light: '운항 요약 (Light)', flight_summary_count: '운항 요약 건수',
     flight_tracks: '비행 궤적', usage: '계정 사용량',
   };
-  const nativeSpecs = {
+  const nativeProviders = [
+    {
+      id: 'flightradar24', label: 'Flightradar24',
+      docs: 'https://fr24api.flightradar24.com/docs/endpoints/overview',
+      endpoints: (config.fr24_endpoints ?? []).map((endpoint) => ({ ...endpoint, label: endpointNames[endpoint.id] ?? endpoint.id })),
+    },
+    {
+      id: 'aerodatabox', label: 'AeroDataBox Direct',
+      docs: 'https://doc.aerodatabox.com/direct.html', endpoints: config.aerodatabox.endpoints ?? [],
+    },
+    ...config.nativeProviders,
+  ].filter(({ endpoints }) => endpoints.length).sort((a, b) => a.label.localeCompare(b.label));
+  const fr24Specs = {
     code: { label: '공항 코드', placeholder: 'ICN' },
     icao: { label: '항공사 ICAO 코드', placeholder: 'KAL' },
     flight_id: { label: 'FR24 항공편 ID', placeholder: '3a55c027' },
@@ -244,7 +288,7 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
     sort: { label: '정렬', options: [['', '기본값'], ['asc', '오름차순'], ['desc', '내림차순']] },
     event_types: { label: '이벤트 유형', placeholder: 'takeoff,landed' },
   };
-  const nativePrimary = new Set(['code', 'icao', 'flight_id', 'flight_ids', 'flights', 'callsigns', 'registrations', 'airports', 'routes', 'timestamp', 'flight_datetime_from', 'flight_datetime_to', 'limit', 'period']);
+  const fr24Primary = new Set(['code', 'icao', 'flight_id', 'flight_ids', 'flights', 'callsigns', 'registrations', 'airports', 'routes', 'timestamp', 'flight_datetime_from', 'flight_datetime_to', 'limit', 'period']);
 
   function option(value, label) {
     const element = document.createElement('option');
@@ -254,14 +298,34 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
   }
 
   for (const id of config.providerIds) providerOptions.append(option(id, id));
-  for (const endpoint of endpoints) {
-    const name = endpointNames[endpoint.id] ?? endpoint.id;
-    const blocked = endpoint.available_on_plan === false;
-    const element = option(endpoint.id, blocked ? name + ' · 현재 플랜에서 사용 불가' : name);
-    element.disabled = blocked;
-    fr24Endpoint.append(element);
+  nativeProvider.append(option('', '공급자를 선택하세요'));
+  for (const provider of nativeProviders) nativeProvider.append(option(provider.id, provider.label));
+  nativeProvider.value = '';
+
+  function setEndpointOptions(entries, previousId) {
+    nativeEndpoint.replaceChildren();
+    const available = entries.filter((endpoint) => endpoint.available_on_plan !== false);
+    const selected = available.find(({ id }) => id === previousId) ?? available.find((endpoint) => (endpoint.method ?? 'GET') === 'GET' && !endpoint.changes_account);
+    if (!selected) nativeEndpoint.append(option('', '엔드포인트를 선택하세요'));
+    const groups = new Map();
+    for (const endpoint of entries) {
+      const { tag } = endpoint;
+      if (tag && !groups.has(tag)) {
+        const group = document.createElement('optgroup');
+        group.label = tag;
+        nativeEndpoint.append(group);
+        groups.set(tag, group);
+      }
+      const method = endpoint.method ?? 'GET';
+      const label = endpoint.label ?? endpoint.shortSummary ?? endpoint.id;
+      const blocked = endpoint.available_on_plan === false;
+      const element = option(endpoint.id, method + ' · ' + label + (blocked ? ' · 현재 플랜에서 사용 불가' : ''));
+      element.disabled = blocked;
+      (groups.get(tag) ?? nativeEndpoint).append(element);
+    }
+    nativeEndpoint.value = selected?.id ?? '';
+    nativeEndpoint.disabled = !available.length;
   }
-  fr24Endpoint.value = endpoints.find((endpoint) => endpoint.available_on_plan !== false)?.id ?? '';
 
   function createField(name, spec, prefix) {
     const wrapper = document.createElement('div');
@@ -282,6 +346,7 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
       input.autocomplete = 'off';
       if (spec.placeholder) input.placeholder = spec.placeholder;
       if (spec.pattern) input.pattern = spec.pattern;
+      if (spec.minLength != null) input.minLength = spec.minLength;
       if (spec.maxLength) input.maxLength = spec.maxLength;
       if (spec.minimum != null) input.min = String(spec.minimum);
       if (spec.maximum != null) input.max = String(spec.maximum);
@@ -289,6 +354,14 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
     if (spec.valueType) input.dataset.valueType = spec.valueType;
     if (spec.value) input.value = spec.value;
     wrapper.append(label, input);
+    if (spec.help) {
+      const help = document.createElement('small');
+      help.id = input.id + '-help';
+      help.className = 'field-help';
+      help.textContent = spec.help;
+      input.setAttribute('aria-describedby', help.id);
+      wrapper.append(help);
+    }
     return wrapper;
   }
 
@@ -311,52 +384,157 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
     return createField(name, spec, 'field-');
   }
 
-  function nativeField(endpoint, name) {
+  function fr24Field(endpoint, name) {
     const schema = config.fr24ParamProperties[name] ?? {};
     const spec = {
       ...schema,
       label: name,
       type: schema.type === 'integer' ? 'number' : 'text',
       options: schema.enum?.map((value) => [value, value]),
-      ...nativeSpecs[name],
+      ...fr24Specs[name],
       required: endpoint.required_parameters.includes(name),
     };
     return createField(name, spec, 'fr24-');
   }
 
-  const selectedEndpoint = () => endpoints.find(({ id }) => id === fr24Endpoint.value);
+  const selectedNativeProvider = () => nativeProviders.find(({ id }) => id === nativeProvider.value);
+  const selectedNativeEndpoint = () => selectedNativeProvider()?.endpoints.find(({ id }) => id === nativeEndpoint.value);
 
   function showOptional(items) {
     additionalFields.replaceChildren(...items);
     additional.hidden = items.length === 0;
   }
 
+  function showFr24Fields(endpoint) {
+    const primary = endpoint.parameters.filter((name) => fr24Primary.has(name) || endpoint.required_parameters.includes(name));
+    const secondary = endpoint.parameters.filter((name) => !primary.includes(name));
+    nativeFields.replaceChildren(...primary.map((name) => fr24Field(endpoint, name)));
+    showOptional(secondary.map((name) => fr24Field(endpoint, name)));
+  }
+
+  function schemaField(name, schema, required, prefix) {
+    const type = Array.isArray(schema.type) ? schema.type.find((type) => type !== 'null') : schema.type;
+    const values = schema.values ?? schema.enum;
+    let options = values?.map((value) => [String(value), String(value)]);
+    if (type === 'boolean') options = [['true', '예 (true)'], ['false', '아니요 (false)']];
+    if (options) options.unshift(['', required ? '선택하세요' : '공급자 기본값']);
+    const isNumber = type === 'integer' || type === 'number';
+    const jsonType = type === 'array' || type === 'object' ? type : undefined;
+    const formatCaption = schema.format === 'date-time'
+      ? (schema.pattern ? 'YYYY-MM-DD 또는 YYYY-MM-DDTHH:mm' : 'YYYY-MM-DDTHH:mm:ssZ')
+      : undefined;
+    const jsonCaption = { array: 'JSON 배열을 입력하세요.', object: 'JSON 객체를 입력하세요.' }[jsonType];
+    return createField(name, {
+      ...schema, required, options,
+      label: schema.label ?? name,
+      type: isNumber ? 'number' : ({ date: 'date', uri: 'url' }[schema.format] ?? 'text'),
+      step: type === 'number' ? 'any' : undefined,
+      valueType: jsonType ?? (options && isNumber ? 'number' : type === 'boolean' ? 'boolean' : undefined),
+      placeholder: schema.placeholder ?? formatCaption,
+      help: [schema.description, jsonCaption].filter(Boolean).join(' '),
+    }, prefix);
+  }
+
+  function showAeroFields(endpoint) {
+    const { required: requiredParams, params, body } = endpoint;
+    const field = (name) => schemaField(name, {
+      ...config.aerodatabox.parameters?.[name], ...endpoint.parameters?.[name],
+    }, requiredParams.includes(name), 'aerodatabox-');
+    nativeFields.replaceChildren(...params.filter((name) => requiredParams.includes(name)).map(field));
+    aerodataBoxBodyFields.replaceChildren(...Object.entries(body?.properties ?? {}).map(([name, schema]) =>
+      schemaField(name, schema, body.required?.includes(name), 'aerodatabox-body-')));
+    const optional = params.filter((name) => !requiredParams.includes(name)).map(field);
+    optional.push(createField('format', fieldSpecs.format, 'aerodatabox-'));
+    showOptional(optional);
+  }
+
+  function showNativeEndpoints(keepEndpoint = false) {
+    setEndpointOptions(selectedNativeProvider()?.endpoints ?? [], keepEndpoint ? nativeEndpoint.value : '');
+    showNativeFields();
+  }
+
+  function resetNativeFields() {
+    nativeFields.replaceChildren();
+    nativeFormat.replaceChildren();
+    aerodataBoxBodyFields.replaceChildren();
+    nativeBodyArea.hidden = true;
+    nativeBody.disabled = true;
+    nativeConfirm.checked = false;
+    nativeConfirmation.hidden = true;
+  }
+
+  function endpointNote(provider, endpoint) {
+    if (!endpoint) return '';
+    if (provider.id === 'flightradar24' && config.fr24_plan) return '플랜 ' + config.fr24_plan;
+    if (provider.id === 'aerodatabox') {
+      if (endpoint.base_units === null) return 'Tier ' + endpoint.tier + ' · 요청한 크레딧 수만큼 API 단위 사용';
+      return endpoint.tier === 'free' ? '무료 그룹' : 'Tier ' + endpoint.tier;
+    }
+    return endpoint.note ?? '';
+  }
+
   function showNativeFields() {
-    const endpoint = selectedEndpoint();
-    fr24Path.hidden = !endpoint;
-    fr24PathValue.textContent = endpoint?.path ?? '';
-    fr24Note.textContent = endpoint ? '공급자 Flightradar24' + (config.fr24_plan ? ' · 플랜 ' + config.fr24_plan : '') : '조회할 수 있는 FR24 엔드포인트가 없습니다.';
-    const primary = endpoint?.parameters.filter((name) => nativePrimary.has(name) || endpoint.required_parameters.includes(name)) ?? [];
-    const secondary = endpoint?.parameters.filter((name) => !primary.includes(name)) ?? [];
-    fr24Fields.replaceChildren(...primary.map((name) => nativeField(endpoint, name)));
-    showOptional(secondary.map((name) => nativeField(endpoint, name)));
+    resetNativeFields();
+    const provider = selectedNativeProvider();
+    const endpoint = selectedNativeEndpoint();
+    const method = endpoint?.method ?? 'GET';
+    const isWrite = endpoint?.changes_account ?? (method !== 'GET');
+    nativePath.hidden = !endpoint;
+    nativeMethod.textContent = method;
+    nativeMethod.className = method === 'GET' ? 'get' : 'post';
+    nativePathValue.textContent = endpoint?.path ?? '';
+    nativeNote.textContent = endpointNote(provider, endpoint);
+    nativeDocs.hidden = !provider?.docs?.startsWith('https://');
+    if (!nativeDocs.hidden) nativeDocs.href = provider.docs;
+    nativeConfirmation.hidden = !isWrite;
+    if (!endpoint) return showOptional([]);
+    if (provider.id === 'flightradar24') return showFr24Fields(endpoint);
+    if (provider.id === 'aerodatabox') return showAeroFields(endpoint);
+
+    const required = [];
+    const optional = [];
+    for (const parameter of endpoint?.parameters ?? []) {
+      const mandatory = parameter.required || parameter.in === 'path';
+      const schema = { ...parameter.schema, description: parameter.description ?? parameter.schema?.description };
+      const control = schemaField(parameter.name, schema, mandatory, 'native-param-');
+      (mandatory ? required : optional).push(control);
+    }
+    nativeFields.replaceChildren(...required);
+    showOptional(optional);
+
+    const formats = endpoint?.formats ?? [];
+    if (formats.length > 1) {
+      nativeFormat.append(createField('format', {
+        ...fieldSpecs.format, options: [['', '공급자 기본값'], ...formats.map((format) => [format, format.toUpperCase()])],
+      }, 'native-response-'));
+    }
+    const body = endpoint?.body;
+    nativeBodyArea.hidden = !body;
+    nativeBody.disabled = !body;
+    nativeBody.required = Boolean(body && (endpoint.bodyRequired || body.required?.length));
+    nativeBodyLabel.textContent = '요청 본문 (JSON)' + (nativeBody.required ? ' *' : '');
+    nativeBody.value = '';
+    nativeBodySchema.textContent = body ? JSON.stringify(body, null, 2) : '';
   }
 
   function updateActions() {
-    submit.disabled = Boolean(active) || (operation.value === 'fr24' && !selectedEndpoint());
+    const endpoint = selectedNativeEndpoint();
+    const noNativeRequest = operation.value === 'native' && (!endpoint || endpoint.available_on_plan === false ||
+      (!nativeConfirmation.hidden && !nativeConfirm.checked));
+    submit.disabled = Boolean(active) || noNativeRequest;
     cancel.disabled = !active;
   }
 
   function showOperation() {
     const mode = operation.value;
-    fr24.hidden = mode !== 'fr24';
-    providerFieldset.hidden = mode === 'fr24';
+    native.hidden = mode !== 'native';
+    providerFieldset.hidden = mode === 'native';
     fields.replaceChildren();
     additional.open = false;
-    if (mode === 'fr24') {
-      showNativeFields();
+    if (mode === 'native') {
+      showNativeEndpoints(true);
     } else {
-      fr24Fields.replaceChildren();
+      resetNativeFields();
       const current = forms[mode];
       fields.append(...current.fields.map((name) => genericField(mode, name)));
       showOptional(current.optional.map((name) => genericField(mode, name)));
@@ -365,12 +543,30 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
     updatePreview();
   }
 
+  function jsonValue(text, label, type) {
+    let value;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      throw new Error(label + '에 올바른 JSON을 입력하세요.');
+    }
+    if (type === 'array' && !Array.isArray(value)) throw new Error(label + '에 JSON 배열을 입력하세요.');
+    if (type === 'object' && (!value || typeof value !== 'object' || Array.isArray(value))) {
+      throw new Error(label + '에 JSON 객체를 입력하세요.');
+    }
+    return value;
+  }
+
   function fieldValues(container) {
     const values = {};
     for (const field of container.querySelectorAll('input, select')) {
       let value = field.value.trim();
       if (!value) continue;
-      if (field.type === 'number') value = Number(value);
+      if (field.type === 'number' || field.dataset.valueType === 'number') value = Number(value);
+      if (field.dataset.valueType === 'boolean') value = value === 'true';
+      if (field.dataset.valueType === 'array' || field.dataset.valueType === 'object') {
+        value = jsonValue(value, field.name, field.dataset.valueType);
+      }
       if (field.type === 'datetime-local') {
         value += value.length === 16 ? ':00Z' : 'Z';
         if (field.dataset.valueType === 'timestamp') value = Math.floor(Date.parse(value) / 1000);
@@ -380,15 +576,40 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
     return values;
   }
 
+  function readEndpointRequest() {
+    const provider = selectedNativeProvider();
+    const endpoint = selectedNativeEndpoint();
+    if (!endpoint) throw new Error('공급자와 엔드포인트를 선택하세요.');
+    const params = { ...fieldValues(nativeFields), ...fieldValues(additionalFields) };
+    const confirmed = !nativeConfirmation.hidden && nativeConfirm.checked;
+    if (provider.id === 'flightradar24') {
+      return { operation: 'fr24', fr24Endpoint: endpoint.id, fr24Params: params };
+    }
+    if (provider.id === 'aerodatabox') {
+      const { format, ...aerodataBoxParams } = params;
+      const input = {
+        operation: 'aerodatabox',
+        aerodataBoxEndpoint: endpoint.id,
+        aerodataBoxParams,
+      };
+      if (endpoint.body) input.aerodataBoxBody = fieldValues(aerodataBoxBodyFields);
+      if (confirmed) input.confirmAeroDataBoxChange = true;
+      if (format) input.format = format;
+      return input;
+    }
+    const input = { operation: 'native', nativeProvider: provider.id, nativeEndpoint: endpoint.id };
+    if (Object.keys(params).length) input.nativeParams = params;
+    const body = nativeBody.value?.trim();
+    if (!nativeBody.disabled && body) input.nativeBody = jsonValue(body, '요청 본문');
+    const { format } = fieldValues(nativeFormat);
+    if (format) input.format = format;
+    if (confirmed) input.confirmNativeChange = true;
+    return input;
+  }
+
   function readRequest() {
     const mode = operation.value;
-    if (mode === 'fr24') {
-      return {
-        operation: 'fr24',
-        fr24Endpoint: fr24Endpoint.value,
-        fr24Params: { ...fieldValues(fr24Fields), ...fieldValues(additionalFields) },
-      };
-    }
+    if (mode === 'native') return readEndpointRequest();
     const input = { operation: mode === 'route' ? 'airport' : mode, ...fieldValues(fields), ...fieldValues(additionalFields) };
     if (mode === 'history' && !input.ident) delete input.identType;
     if (mode === 'route') input.direction = 'departure';
@@ -400,7 +621,11 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
   }
 
   function updatePreview() {
-    requestPreview.textContent = JSON.stringify(readRequest(), null, 2);
+    try {
+      requestPreview.textContent = JSON.stringify(readRequest(), null, 2);
+    } catch (error) {
+      requestPreview.textContent = error.message;
+    }
   }
 
   function addResult(label, value, open = false) {
@@ -438,8 +663,19 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
   }
 
   operation.addEventListener('change', showOperation);
-  fr24Endpoint.addEventListener('change', () => {
+  nativeProvider.addEventListener('change', () => {
+    additional.open = false;
+    showNativeEndpoints();
+    updateActions();
+    updatePreview();
+  });
+  nativeEndpoint.addEventListener('change', () => {
+    additional.open = false;
     showNativeFields();
+    updateActions();
+    updatePreview();
+  });
+  nativeConfirm.addEventListener('change', () => {
     updateActions();
     updatePreview();
   });
@@ -449,9 +685,20 @@ export const landing = (providerIds, fr24Catalog = {}, fr24ParamProperties = {})
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (active || submit.disabled) return;
-    const input = readRequest();
     results.replaceChildren();
     received = 0;
+    let input;
+    try {
+      input = readRequest();
+    } catch (error) {
+      status.textContent = error.message;
+      status.setAttribute('data-error', '');
+      return;
+    }
+    if (input.confirmAeroDataBoxChange || input.confirmNativeChange) {
+      nativeConfirm.checked = false;
+      updatePreview();
+    }
     status.removeAttribute('data-error');
     status.textContent = '조회 중…';
     const controller = new AbortController();

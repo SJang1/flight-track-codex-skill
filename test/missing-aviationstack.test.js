@@ -42,16 +42,39 @@ test('Aviationstack history and schedule use their own date parameters and prese
     assert.equal(result.content[source.raw_body_content_index].text, raw);
   }
 
+  const timetable = await lookup({ ...schedule, date: '2026-11-25', ident: 'KE703', identType: 'flight_number', page: 2, limit: 5 });
+  assert.equal(timetable.structuredContent.providers[0].status, 'ok');
+  assert.equal(requests[2].pathname, '/aviationstack/v1/timetable');
+  assert.deepEqual(Object.fromEntries(requests[2].searchParams), {
+    access_key: 'aviationstack-fixture', iataCode: 'ICN', type: 'arrival', flight_iata: 'KE703', limit: '5', offset: '5',
+  });
+
+  const future = await lookup({ ...schedule, ident: 'KAL703', identType: 'icao', page: 2, limit: 3 });
+  assert.equal(future.structuredContent.providers[0].status, 'ok');
+  assert.equal(requests[3].pathname, '/aviationstack/v1/flightsFuture');
+  assert.deepEqual(Object.fromEntries(requests[3].searchParams), {
+    access_key: 'aviationstack-fixture', iataCode: 'ICN', type: 'arrival', date: '2026-11-26',
+    airline_icao: 'KAL', flight_number: '703', limit: '3', offset: '3',
+  });
+
+  const live = await lookup({ operation: 'live', ident: 'KE703', identType: 'iata', airport: 'RKSI', oppositeAirport: 'RJAA', direction: 'departure' });
+  assert.equal(live.structuredContent.providers[0].status, 'ok');
+  assert.equal(requests[4].pathname, '/aviationstack/v1/flights');
+  assert.deepEqual(Object.fromEntries(requests[4].searchParams), {
+    access_key: 'aviationstack-fixture', flight_status: 'active', flight_iata: 'KE703', dep_icao: 'RKSI', arr_icao: 'RJAA', limit: '10',
+  });
+
   for (const input of [
     { ...history, fromTime: '0600', toTime: '1000' },
-    { ...schedule, ident: 'KE703', identType: 'flight_number' },
-    { ...schedule, date: '2026-11-25' },
-    { ...schedule, limit: 3 },
+    { ...schedule, oppositeAirport: 'NRT' },
+    { ...schedule, date: '2026-11-24' },
+    { ...schedule, date: '2027-12-01' },
+    { operation: 'live', ident: 'KE703', identType: 'iata', date: '2026-11-25' },
   ]) {
     const skipped = await lookup(input);
     assert.equal(skipped.structuredContent.providers[0].status, 'unsupported_input');
   }
   const missing = await lookup(schedule, {});
   assert.equal(missing.structuredContent.providers[0].status, 'missing_credentials');
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 5);
 });

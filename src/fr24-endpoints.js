@@ -167,9 +167,9 @@ export function fr24RequestOptions(id, params, env) {
   }
   if (endpoint.family === 'summary') checkSummary(query, plan);
   if (query.flight_ids && !/^[\da-f]+(?:,[\da-f]+)*$/i.test(query.flight_ids)) throw new Error('Supply comma-separated hexadecimal FR24 flight_ids.');
+  if (query.flight_ids && query.flight_ids.split(',').length > 15) throw new Error('FR24 accepts up to 15 flight IDs per request.');
   if (query.flight_id && !/^[\da-f]+$/i.test(query.flight_id)) throw new Error('Supply a hexadecimal FR24 flight_id.');
   if (endpoint.family === 'events') {
-    if (query.flight_ids.split(',').length > 15) throw new Error('FR24 historic events accept up to 15 flight IDs.');
     query.event_types ??= 'all';
     if (query.event_types?.split(',').some((type) => !eventTypes.includes(type))) throw new Error('Supply documented FR24 event types or all.');
   }

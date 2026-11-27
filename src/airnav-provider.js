@@ -1,4 +1,5 @@
 import { hasTimeFilter, timeWindow } from './lookup-time.js';
+import { airNavEndpoints } from './airnav-endpoints.js';
 
 const BASE_URL = 'https://api.airnavradar.com/v2';
 const DAY_MS = 86_400_000;
@@ -129,6 +130,13 @@ export const airnavProvider = {
   docs: 'https://www.airnavradar.com/api/documentation',
   note: 'Search and track use one result per page. Track includes flight paths only when requested. Schedule, aircraft and airport lookups use the AirNav On Demand API. The raw cost field reports charges where provided; the local pacing budget is 100 credits across 31 days.',
   keys: ['AIRNAVRADAR_API_TOKEN'],
+  native: {
+    baseUrl: BASE_URL,
+    endpoints: airNavEndpoints,
+    options(_input, env) {
+      return { headers: request('', env)?.headers };
+    },
+  },
   airportInfoOnly: true,
   airportInfo(input, env) {
     return request(`/airports/${encodeURIComponent(input.airport)}`, env);

@@ -1,3 +1,5 @@
+import { freeAirportDbNative } from './adsb-native-endpoints.js';
+
 const HOUR_MS = 60 * 60 * 1000;
 
 export const airportDataProvider = {
@@ -10,6 +12,7 @@ export const airportDataProvider = {
     { name: 'OurAirports', url: 'https://ourairports.com/' },
   ],
   limits: [{ requests: 1000, windowMs: HOUR_MS }, { requests: 10, windowMs: 1000 }],
+  native: freeAirportDbNative,
   operations: {},
   airportInfo(input) {
     const code = input.airport;

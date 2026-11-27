@@ -1,5 +1,9 @@
 import { retryAfterMs } from './quota.js';
 import { airportTimeZone, hasTimeFilter, localTimeWindow, timeWindow } from './lookup-time.js';
+import { AERODATABOX, aeroDataBoxHeaders, aeroDataBoxNativeRequest } from './aerodatabox-provider.js';
+import { aeroDataBoxEndpointCatalog } from './aerodatabox-endpoints.js';
+import { flightAwareEndpoints } from './flightaware-endpoints.js';
+import { adsbAeroNative, adsbFiNative, adsbLolNative, avioAdsbNative, openSkyNative } from './adsb-native-endpoints.js';
 
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
@@ -13,7 +17,6 @@ const AVIOADSB = 'https://avioadsb.org/v1';
 const ADSB_AERO = 'https://adsb.aero/api/v1';
 const OPENSKY = 'https://opensky-network.org/api';
 const FLIGHTAWARE = 'https://aeroapi.flightaware.com/aeroapi';
-const AERODATABOX = 'https://api.aerodatabox.com';
 
 const flightSearchTypes = {
   flight_number: 'number',
@@ -157,6 +160,16 @@ function openSkyTrack(input) {
   const icao24 = openSkyAircraft(input);
   const time = openSkyTime(input, 30 * DAY, 'track');
   return aircraftRequest(input, get(OPENSKY, '/tracks/all', {}, { icao24, time: time ?? 0 }));
+}
+
+function openSkyNativeCost(input) {
+  const { nativeEndpoint: endpoint, nativeParams: params = {} } = input;
+  if (endpoint === 'states_all') {
+    const area = (params.lamax - params.lamin) * (params.lomax - params.lomin);
+    return area <= 25 ? 1 : area <= 100 ? 2 : area <= 400 ? 3 : 4;
+  }
+  if (endpoint === 'track') return params.time ? 30 : 4;
+  return params.end - params.begin < DAY / SECOND ? 4 : 30;
 }
 
 async function authorizeOpenSky(_input, env, fetch) {
@@ -355,13 +368,6 @@ function flightAwareSchedule(input, env) {
   return request;
 }
 
-function aeroDataBoxHeaders(input, env) {
-  return {
-    ...keyHeader(env, 'AERODATABOX_API_KEY'),
-    ...(input.format === 'xml' ? { Accept: 'application/xml' } : {}),
-  };
-}
-
 function aeroDataBoxAircraft(input, env, registrations = false) {
   checkReferenceFilters(input);
   const selectors = { registration: 'reg', icao24: 'icao24', provider_id: 'id' };
@@ -441,6 +447,7 @@ function aeroDataBoxFlight(input, env) {
       withFlightPlan: filedRoute ? true : undefined,
       dateLocalRole: { arrival: 'Arrival', departure: 'Departure' }[input.direction],
     });
+  request.estimatedUnitCost = multiDay ? 6 : filedRoute ? 4 : 2;
   if (input.airport) request.routeFilterNote = 'AeroDataBox looked up the flight identifier. This endpoint does not filter by airport.';
   if (filedRoute) {
     request.routeFilterNote = 'AeroDataBox requested the filed flight plan. Availability depends on flight coverage and the subscribed plan.';
@@ -500,6 +507,7 @@ function adsbAeroHistory(input) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     ...(range ? { timeFilterBasis: 'start_ts' } : {}),
+    ...(range && range.end - range.begin > 7 * DAY ? { timeFilterNote: 'Each adsb.aero query covers at most seven days. Check the response window and continue with an earlier window if needed.' } : {}),
     ...(input.identType !== 'icao24' ? { identityFilterNote: 'adsb.aero matches callsign and registration by prefix. Check the full identifier in each record.' } : {}),
   });
 }
@@ -509,8 +517,9 @@ export const trackingProviders = [
     id: 'adsb_fi',
     label: 'adsb.fi',
     docs: 'https://github.com/adsbfi/opendata#usage',
-    note: 'Public aircraft lookup at one request per second. Personal, non-commercial use with adsb.fi attribution.',
+    note: 'Public aircraft lookup at one request per second. Personal, non-commercial use with adsb.fi attribution. The provider does not support access from Cloudflare Workers. The snapshot endpoint requires a feeder IP.',
     keys: [],
+    native: adsbFiNative,
     limits: [{ requests: 1, windowMs: SECOND }],
     operations: {
       live: (input) => liveAdsb(input, 'adsb.fi', ADSB_FI, '/v2', 'registration'),
@@ -527,6 +536,7 @@ export const trackingProviders = [
     docs: 'https://www.adsb.lol/docs/open-data/api',
     note: 'ODbL 1.0. This integration requires ADSB_LOL_API_KEY. Tracks use the stored full daily trace by default, or the most recent points with trackScope: recent. Airport reference requires an ICAO code. Set ADSB_LOL_TIER to adhoc or feeder for the corresponding key allowance.',
     keys: ['ADSB_LOL_API_KEY'],
+    native: adsbLolNative,
     trackScopes: ['recent', 'full'],
     airportInfoOnly: true,
     airportInfo(input, env) {
@@ -534,7 +544,8 @@ export const trackingProviders = [
       if (!/^[A-Z]{4}$/.test(icao ?? '')) throw new Error('Supply a four-letter ICAO airport code for adsb.lol airport reference.');
       return get(ADSB_LOL, `/api/0/airport/${icao}`, keyHeader(env, 'ADSB_LOL_API_KEY'));
     },
-    limits(_input, env) {
+    limits(input, env) {
+      if (input.operation === 'native' && ['routeset', 'receiver_stats', 'map_redirect'].includes(input.nativeEndpoint)) return null;
       if (env.ADSB_LOL_TIER === 'feeder') {
         return [
           { requests: 72, windowMs: 30 * SECOND },
@@ -577,12 +588,13 @@ export const trackingProviders = [
     note: 'CC BY-NC 4.0. Aircraft details by ICAO24 are live extended observations. Inactive contributor keys use the documented anonymous limits.',
     keys: [],
     optionalKeys: ['AVIOADSB_API_KEY'],
-    limits(_input, env, response) {
+    native: avioAdsbNative,
+    limits(input, env, response) {
       const tier = response?.headers?.get('X-AvioADSB-Tier');
-      if (env.AVIOADSB_API_KEY?.trim() && tier !== 'inactive_key' && tier !== 'anonymous') {
-        return [{ requests: 1, windowMs: SECOND }, { requests: 10_000, windowMs: MONTH }];
-      }
-      return [{ requests: 1, windowMs: 10 * SECOND }, { requests: 100, windowMs: DAY }];
+      const contributor = env.AVIOADSB_API_KEY?.trim() && !['inactive_key', 'anonymous'].includes(tier);
+      const spacing = { requests: 1, windowMs: contributor ? SECOND : 10 * SECOND };
+      if (input.operation === 'native' && input.nativeEndpoint === 'me') return [spacing];
+      return [spacing, contributor ? { requests: 10_000, windowMs: MONTH } : { requests: 100, windowMs: DAY }];
     },
     operations: {
       live: (input, env) => liveAdsb(input, 'AvioADSB', AVIOADSB, '', 'reg', keyHeader(env, 'AVIOADSB_API_KEY')),
@@ -598,6 +610,7 @@ export const trackingProviders = [
     docs: 'https://adsb.aero/llms.txt',
     note: 'Public archive of observed airborne trajectories. Callsign and registration searches are prefix searches. Local spacing is 30 seconds under the provider’s fair-use guidance.',
     keys: [],
+    native: adsbAeroNative,
     trackScopes: ['full'],
     limits: [{ requests: 1, windowMs: 30 * SECOND }],
     airportInfoOnly: true,
@@ -621,13 +634,24 @@ export const trackingProviders = [
     id: 'opensky',
     label: 'OpenSky Network',
     docs: 'https://openskynetwork.github.io/opensky-api/rest.html',
-    note: 'Operational API use requires an OpenSky written agreement. The archive is batch processed. Set OPENSKY_CREDIT_TIER to feeder or licensed for a confirmed higher credit allowance.',
+    note: 'Operational API use requires an OpenSky written agreement. Current state vectors can use anonymous access when OAuth is absent. The archive is batch processed. Set OPENSKY_CREDIT_TIER to feeder or licensed for a confirmed higher credit allowance.',
     keys: ['OPENSKY_CLIENT_ID', 'OPENSKY_CLIENT_SECRET'],
-    limits(_input, env) {
+    native: openSkyNative,
+    allowAnonymous(input) {
+      return (input.operation === 'live' && !hasTimeFilter(input)) ||
+        (input.operation === 'native' && input.nativeEndpoint === 'states_all' && !input.nativeParams?.time);
+    },
+    limits(input, env) {
+      if (input.operation === 'native' && input.nativeEndpoint === 'states_own') return null;
+      if (!(env.OPENSKY_CLIENT_ID?.trim() && env.OPENSKY_CLIENT_SECRET?.trim())) return [{ requests: 400, windowMs: DAY }];
       if (env.OPENSKY_CREDIT_TIER === 'licensed') return [{ requests: 14_400, windowMs: HOUR }];
       return [{ requests: env.OPENSKY_CREDIT_TIER === 'feeder' ? 8_000 : 4_000, windowMs: DAY }];
     },
     bucket(input) {
+      if (input.operation === 'native') {
+        if (input.nativeEndpoint?.startsWith('states_')) return 'states';
+        return input.nativeEndpoint === 'track' ? 'tracks' : 'flights';
+      }
       return { live: 'states', track: 'tracks' }[input.operation] ?? 'flights';
     },
     cost(input) {
@@ -639,6 +663,7 @@ export const trackingProviders = [
       return partitions > 2 ? 60 * partitions : 30;
     },
     quotaCost(input) {
+      if (input.operation === 'native') return openSkyNativeCost(input);
       return input.operation === 'live' ? 4 : 30;
     },
     authorize: authorizeOpenSky,
@@ -674,6 +699,9 @@ export const trackingProviders = [
           throw new Error('Supply an ICAO airport code and arrival or departure for OpenSky airport movements.');
         }
         const range = openSkyRange(input);
+        if (Math.floor(range.end * SECOND / DAY) - Math.floor(range.begin * SECOND / DAY) > 1) {
+          throw new Error('OpenSky arrival and departure searches can cross at most one UTC midnight.');
+        }
         return { ...get(OPENSKY, `/flights/${direction}`, {}, { airport: airport.toUpperCase(), ...range }), timeFilterBasis: direction };
       },
     },
@@ -685,10 +713,25 @@ export const trackingProviders = [
     note: 'Usage-based billing per result set. FlightAware approval is required to use AeroAPI data with another live flight-data provider on Personal and Standard plans. Set FLIGHTAWARE_HISTORY=true only if the plan includes historical access.',
     exclusive: true,
     keys: ['FLIGHTAWARE_API_KEY'],
+    native: {
+      baseUrl: FLIGHTAWARE,
+      endpoints: flightAwareEndpoints,
+      options(input, env, endpoint) {
+        const { eta, impending_arrival: impendingArrival } = input.nativeBody ?? {};
+        if (eta > 0 && impendingArrival?.length) throw new Error('Choose eta or impending_arrival for the FlightAware alert.');
+        if (endpoint.path.startsWith('/history/airports/') || endpoint.path.startsWith('/history/operators/')) {
+          const { start, end, max_pages: pages } = input.nativeParams;
+          const duration = Date.parse(end) - Date.parse(start);
+          if (!(duration > 0 && duration <= DAY) || pages > 40) throw new Error('Use an ordered historical interval of up to 24 hours and at most 40 pages.');
+        }
+        return { headers: { ...keyHeader(env, 'FLIGHTAWARE_API_KEY', 'x-apikey'),
+          ...(input.nativeBody !== undefined ? { 'Content-Type': 'application/json; charset=UTF-8' } : {}) } };
+      },
+    },
     airportInfoOnly: true,
     airportInfo: (input, env) => flightAwareReference(input, env, '/airports', input.airport, /^[A-Z0-9]{3,4}$/i, true),
     routeOperations: ['airport', 'history', 'schedule'],
-    limits: [{ requests: 10, windowMs: MINUTE }],
+    limits: (input) => input.nativeEndpoint === 'get_account_usage' ? null : [{ requests: 10, windowMs: MINUTE }],
     operations: {
       flight: (input, env) => flightAwareQuery(input, env, ''),
       live: (input, env) => flightAwareInstance(input, env, 'position'),
@@ -717,22 +760,24 @@ export const trackingProviders = [
     id: 'aerodatabox',
     label: 'AeroDataBox Direct',
     docs: 'https://doc.aerodatabox.com/direct.html',
-    note: 'Direct key only. Flight status and airport boards cost 2 units, date-range flight status costs 6. Feeder credits do not reset. Airport board times use the queried airport’s local clock. Local spacing applies, with an optional confirmed monthly allowance.',
+    note: 'Direct key only. Airport boards use the airport’s local clock. Native operations expose their billing tier. Recommended spacing uses an optional confirmed monthly API-unit allowance and the endpoint’s estimated cost. Flight-alert credits are a separate balance.',
     keys: ['AERODATABOX_API_KEY'],
     formats: ['json', 'xml'],
     airportInfoOnly: true,
     airportInfo: aeroDataBoxAirport,
-    limits(_input, env) {
+    endpointCatalog: aeroDataBoxEndpointCatalog,
+    limits(input, env, _response, request) {
       const units = Number(env.AERODATABOX_MONTHLY_UNITS);
-      return Number.isSafeInteger(units) && units > 0
-        ? [{ requests: 6, windowMs: 5 * SECOND }, { requests: units, windowMs: MONTH }]
-        : [{ requests: 6, windowMs: 5 * SECOND }];
-    },
-    quotaCost(input) {
-      if (['aircraft', 'aircraft_registrations', 'airport_info', 'airport_runways'].includes(input.operation)) return 1;
-      return input.operation === 'flight_dates' ? 2 : 6;
+      const reference = ['aircraft', 'aircraft_registrations', 'airport_info', 'airport_runways'].includes(input.operation);
+      const cost = request?.estimatedUnitCost ?? (reference ? 1 : input.operation === 'filed_route' ? 4 : 2);
+      const windows = [{ requests: 1, windowMs: 5 * SECOND }];
+      if (cost > 0 && Number.isSafeInteger(units) && units >= cost) {
+        windows.push({ requests: Math.floor(units / cost), windowMs: MONTH });
+      }
+      return windows;
     },
     operations: {
+      aerodatabox: aeroDataBoxNativeRequest,
       flight: aeroDataBoxFlight,
       live: aeroDataBoxFlight,
       flight_dates: aeroDataBoxFlightDates,
